@@ -58,7 +58,7 @@ services:
   frontend:
     # The dev server, not nginx. The base image stays built and cached, so
     # flipping back to ``make up`` afterwards costs one restart, not a build.
-    image: node:20-bookworm-slim
+    image: debian:bookworm-slim
     working_dir: /app
     environment:
       # ``npm run dev`` binds 0.0.0.0:5173 and proxies /api; the target has to be
@@ -71,9 +71,11 @@ services:
     volumes:
       - ./frontend:/app
       # Keep the container's own node_modules: the host copy is macOS-built and
-      # would break esbuild/rollup binaries inside Alpine.
+      # would break esbuild/rollup binaries inside the container. The path must
+      # match the ``RUN npm install`` layer in frontend/Dockerfile, so switching
+      # images reuses that layer instead of downloading the packages again.
       - /app/node_modules
-    command: sh -c "npm install --no-audit --no-fund && npm run dev"
+    command: sh -c "apt-get update && apt-get install -y --no-install-recommends nodejs npm ca-certificates && npm install --no-audit --no-fund && npm run dev"
     # Compose *appends* ports across files, so :8080 from the base file would
     # still be published -- pointing at a dev server that listens on 5173, i.e.
     # a port nothing answers on. One frontend address at a time: :5173 here.

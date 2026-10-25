@@ -1,5 +1,9 @@
 # --- build stage -----------------------------------------------------------
-FROM node:20-bookworm-slim AS build
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends nodejs npm ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
