@@ -213,28 +213,30 @@ def release_holds(session: Session, proposal: BookingProposal, now: datetime) ->
 
 
 def expire_proposal(session: Session, proposal: BookingProposal, now: datetime) -> bool:
-    """Retire a pending proposal. True when this call actually resolved it."""
+    """Release a proposal's holds. True when this call actually released any.
+
+    It does **not** change ``status``: a lapsed hold ends the reservation, not
+    the patient's choice. The card stays confirmable, and confirmation
+    revalidates the interval inside its write transaction -- it books the time
+    if it is still open and reports ``slot_taken`` if somebody else took it.
+    Retiring a proposal outright is ``reject_proposal`` (declined) or
+    ``supersede_pending`` (replaced by a newer choice).
+    """
     if proposal.status != ProposalStatus.PENDING.value:
         return False
-    release_holds(session, proposal, now)
-    proposal.status = ProposalStatus.EXPIRED.value
-    proposal.resolved_at = now
-    return True
+    return release_holds(session, proposal, now) > 0
 
 
 def release_expired_holds(session: Session, conversation_id: int) -> list[str]:
-    """Hand back held times whose window has passed. Returns the proposal ids.
+    """Hand back held times whose window has passed. Returns the affected ids.
 
     A hold is short (``HOLD_MINUTES``) so a clicked time never sits on a
-    dentist's calendar while the patient is still deciding. Superseding the
-    proposal when its hold lapses is what keeps the two clocks honest: the
-    patient is never shown a card that says "Held until 5:13 AM" at 5:40, and
-    the grid they were looking at is not silently re-reserved by them.
-
-    Lapsing is *not* a cancellation. Nothing is booked and nothing is lost:
-    confirming a lapsed card revalidates the interval and books it if it is
-    still open, and if someone else took it the usual "that time was just taken"
-    path applies. That is why the message says so rather than "declined".
+    dentist's calendar while the patient is still deciding. When the window
+    passes, the slots are released for everyone else -- but the proposal itself
+    stays pending and confirmable, because nothing was booked and the patient
+    did not decline. Confirming a lapsed card revalidates the interval and books
+    it if it is still open; if someone else took it, the usual "that time was
+    just taken" path applies.
 
     Accepts a ``public_id`` too, so a caller holding the conversation record
     cannot pass the wrong numeric id.
@@ -256,12 +258,12 @@ def release_expired_holds(session: Session, conversation_id: int) -> list[str]:
         if expire_proposal(session, proposal, now):
             audit.record(
                 session,
-                action="proposal.expired",
+                action="proposal.hold_lapsed",
                 actor_type="system",
                 entity_type="booking_proposal",
                 entity_id=proposal.public_id,
                 conversation_id=proposal.conversation_id,
-                details={"reason": "hold_lapsed", "hold_minutes": HOLD_MINUTES},
+                details={"reason": "hold_window_passed", "hold_minutes": HOLD_MINUTES},
             )
             released.append(proposal.public_id)
     return released
@@ -745,8 +747,8 @@ def _already_resolved(proposal: BookingProposal) -> Outcome:
     )
 
 
-def _reinstate_lapsed_hold(proposal: BookingProposal, now: datetime) -> bool:
-    """Reopen a proposal whose *hold* lapsed, so the clicked time can still be taken.
+def _reopen_lapsed_hold(session: Session, proposal: BookingProposal, now: datetime) -> bool:
+    """Allow a confirmation whose *hold* lapsed, so the clicked time can still be taken.
 
     The hold window is deliberately short (``HOLD_MINUTES``): a click reserves a
     dentist's interval for a couple of minutes, not half an hour, so a patient
@@ -761,15 +763,18 @@ def _reinstate_lapsed_hold(proposal: BookingProposal, now: datetime) -> bool:
     * somebody else took it in the meantime -> the usual ``slot_taken`` result,
       with nothing booked and the original visit untouched.
 
-    This is why the proposal row has two clocks: ``expires_at`` bounds the
-    *hold*, and reaching it only ends the reservation. Only cancellation,
-    supersession and a confirmed booking are irreversible.
+    Only cancellation, supersession and a confirmed booking are irreversible.
+    A lapsed hold is *not* an expiry: ``expire_proposal`` is for retiring a
+    proposal outright (a demo reset), and its row stays expired.
     """
     if proposal.status != ProposalStatus.EXPIRED.value:
+        return False
+    if proposal.confirmed_at is not None or proposal.booking_group_id is not None:
         return False
     proposal.status = ProposalStatus.PENDING.value
     proposal.resolved_at = None
     proposal.expires_at = now + timedelta(minutes=HOLD_MINUTES)
+    session.flush()
     return True
 
 
@@ -796,8 +801,8 @@ def confirm_proposal(
     if proposal.status == ProposalStatus.ACCEPTED.value:
         return _replay_accepted(session, proposal)
     # A lapsed *hold* is not a lost choice: the click still counts, and the
-    # transaction below decides whether the time is still there to take.
-    _reinstate_lapsed_hold(proposal, utcnow())
+    # transaction below decides whether the time is still there to take. Only
+    # cancellation, supersession and a confirmed booking are irreversible.
     if proposal.status != ProposalStatus.PENDING.value:
         return _already_resolved(proposal)
 
@@ -821,9 +826,6 @@ def confirm_proposal(
             session.refresh(proposal)
             if proposal.status == ProposalStatus.ACCEPTED.value:
                 return _replay_accepted(session, proposal)
-            if proposal.status == ProposalStatus.EXPIRED.value:
-                # Lapsed between the check above and the write lock.
-                _reinstate_lapsed_hold(proposal, utcnow())
             if proposal.status != ProposalStatus.PENDING.value:
                 return _already_resolved(proposal)
             items = sorted(proposal.items, key=lambda item: item.id)
