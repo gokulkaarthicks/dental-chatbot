@@ -601,16 +601,26 @@ export function useCardActions({
             level: "warning",
           });
           markLiveProposals(result.cards);
-          if (result.cards.length > 0) appendCardMessage(result.cards);
-          // A conflict (the time was taken, or the booking can never be made)
-          // leaves the card pending server-side so the patient can retry or
-          // pick again; only a resolved/stale proposal stops being actionable.
+          // A conflict normally leaves the proposal pending so the patient can
+          // retry. A family conflict is different: the backend returns fresh
+          // complete options and retires the old all-or-nothing hold.
           const retryable =
-            result.error === "slot_taken" ||
-            result.error === "busy" ||
-            result.error === "booking_conflict";
+            !result.proposal_stale &&
+            (result.error === "slot_taken" ||
+              result.error === "busy" ||
+              result.error === "booking_conflict");
           if (result.cards.length > 0) {
-            resolveProposalCard(card.proposal_id, result.cards);
+            const hasFreshFamilyOptions = result.cards.some(
+              (item) => item.type === "family_option",
+            );
+            if (hasFreshFamilyOptions) {
+              resolveProposalCard(card.proposal_id, []);
+              appendCardMessage(result.cards, result.message ?? undefined);
+            } else {
+              resolveProposalCard(card.proposal_id, result.cards);
+            }
+          } else if (result.proposal_stale) {
+            resolveProposalCard(card.proposal_id, []);
           }
           if (!retryable && result.error) {
             setLiveProposalIds((current) => {

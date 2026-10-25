@@ -1543,8 +1543,40 @@ def confirm(
             kind=proposal.kind,
         )
         if outcome.error == "slot_taken":
-            payload["next_step"] = "Search again and offer the fresh alternatives."
-            payload["cards"] = [proposal_card(proposal, include_actions=True)]
+            fresh_family_cards: list[dict[str, Any]] = []
+            family_conflict = proposal.kind == "booking" and len(proposal.items) > 1
+            if family_conflict:
+                # The family request is one atomic booking. Retire the stale
+                # hold before searching so the next cards represent one fresh
+                # contiguous run for everyone, never a partial booking.
+                supersede_pending(
+                    session,
+                    conversation_id=requester.conversation_id,
+                    kinds=("booking",),
+                    intent="new_booking",
+                )
+                fresh_family_cards = family_options_after_conflict(
+                    session, requester=requester, proposal=proposal
+                )
+            if fresh_family_cards:
+                payload["message"] = (
+                    "Those times changed before confirmation, so nothing was booked. "
+                    "I released that hold and found fresh back-to-back options for everyone."
+                )
+                payload["next_step"] = "Offer the fresh family options; do not retry the old card."
+                payload["proposal_stale"] = True
+                payload["cards"] = fresh_family_cards
+            elif family_conflict:
+                payload["message"] = (
+                    "Those times changed before confirmation, so nothing was booked. "
+                    "I couldn't find another complete back-to-back run on that day."
+                )
+                payload["next_step"] = "Ask whether the patient wants another day or separate visits."
+                payload["proposal_stale"] = True
+                payload["cards"] = []
+            else:
+                payload["next_step"] = "Search again and offer the fresh alternatives."
+                payload["cards"] = [proposal_card(proposal, include_actions=True)]
         elif outcome.error == "booking_conflict":
             # Nothing was written, but this card can never succeed as it stands
             # (its visit moved, or the booking would duplicate one). Stop
@@ -2104,6 +2136,44 @@ def family_search(
         ),
         cards=family_option_cards(plans=plans, appointment_types=types),
     )
+
+
+def family_options_after_conflict(
+    session: Session, *, requester: Requester, proposal: BookingProposal
+) -> list[dict[str, Any]]:
+    """Find a fresh complete family run after a held run became stale."""
+    if proposal.kind != "booking" or len(proposal.items) < 2:
+        return []
+
+    items = sorted(proposal.items, key=lambda item: item.order_index)
+    starts = [item.proposed_starts_at for item in items if item.proposed_starts_at is not None]
+    if not starts:
+        return []
+
+    members: list[FamilyMemberInput] = []
+    for item in items:
+        if item.patient_id is None or not item.appointment_type_code:
+            return []
+        patient = session.get(Patient, item.patient_id)
+        if patient is None:
+            return []
+        members.append(
+            FamilyMemberInput(
+                patient=patient,
+                appointment_type_code=item.appointment_type_code,
+            )
+        )
+
+    # Keep the requested calendar day while finding another complete block on
+    # that day if the original run was taken.
+    refreshed = family_search(
+        session,
+        requester=requester,
+        members=members,
+        start_date=min(starts).date().isoformat(),
+        range_days=1,
+    )
+    return [card for card in refreshed.get("cards", []) if isinstance(card, dict)]
 
 
 def _family_requests(
