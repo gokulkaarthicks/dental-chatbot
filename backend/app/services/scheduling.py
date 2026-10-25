@@ -963,6 +963,11 @@ def propose_booking(
     supersede_pending(
         session, conversation_id=requester.conversation_id, kinds=("booking",)
     )
+    # The proposal writer deliberately rolls back any implicit transaction
+    # before opening BEGIN IMMEDIATE. Persist the canonical request first so a
+    # successful hold, replay, or failed conflict cannot erase the context
+    # needed for the next scheduling turn.
+    session.commit()
     items = [
         DraftItem(
             patient_id=option.patient_id or requester.patient.id,
@@ -2794,6 +2799,11 @@ def hold_family_option(
             "provider_name": provider_name,
         },
     )
+    # ``create_proposal`` starts a fresh write transaction and discards any
+    # implicit transaction on this session. Keep the request revision durable
+    # before the hold is attempted so repeat clicks and follow-up searches can
+    # recover the complete family shape.
+    session.commit()
     active = _pending_booking_for_request(session, requester, request_id)
     if (
         active is not None
