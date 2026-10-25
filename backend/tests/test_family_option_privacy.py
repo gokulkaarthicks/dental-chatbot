@@ -5,7 +5,6 @@ from app.models import Message, utcnow
 from app.schemas import ChatSendMessageRequest
 from app.services.conversations import public_message
 
-
 OPTION_IDENTITY = "family1:slot_1_202610310800,3:slot_1_202610310900"
 
 

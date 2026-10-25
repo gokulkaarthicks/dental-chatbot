@@ -885,7 +885,7 @@ def search_back_to_back_plans(
         raise ValueError("too many family members for one back-to-back block")
 
     providers = load_providers(session)
-    scan_from = max(preferences.today, current.date())
+    scan_from = max(preferences.scan_bounds[0], current.date())
     last_day = min(
         preferences.scan_bounds[1],
         scan_from + timedelta(days=max(1, max_days) - 1),

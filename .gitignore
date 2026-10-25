@@ -34,3 +34,6 @@ dist/
 .idea/
 .vscode/
 *.log
+
+# Local diagnostics / generated dumps
+latest_logs/
