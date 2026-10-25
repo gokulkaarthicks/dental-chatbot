@@ -14,8 +14,9 @@ decides prose.
 from __future__ import annotations
 
 import logging
+import secrets
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -43,6 +44,7 @@ from app.services.availability_engine import (
     is_interval_bookable,
     resolve_appointment_type,
     search_availability,
+    search_back_to_back_plans,
     search_nearby_family_plans,
 )
 from app.services.proposals import (
@@ -94,6 +96,129 @@ def _ok(**payload: Any) -> dict[str, Any]:
     return payload
 
 
+def scheduling_request(session: Session, conversation_id: int) -> dict[str, Any] | None:
+    conversation = session.get(Conversation, conversation_id)
+    value = conversation.scheduling_request if conversation is not None else None
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _request_preferences(preferences) -> dict[str, Any]:
+    return {
+        "date_phrases": list(preferences.requested),
+        "time_windows": [window.label for window in preferences.windows],
+        "weekdays": [],
+        "exclude_weekdays": [],
+        "range_days": (
+            (preferences.scan_end - preferences.scan_start).days + 1
+            if preferences.scan_start and preferences.scan_end
+            else None
+        ),
+        "provider_name": preferences.provider_name,
+        "fallback_allowed": bool(preferences.fallback_allowed),
+    }
+
+
+def _participant_record(member: FamilyMemberRequest) -> dict[str, Any]:
+    return {
+        "patient_id": member.patient_id,
+        "patient_first_name": member.patient_first_name,
+        "appointment_type_code": member.appointment_type.code,
+        "appointment_type": member.appointment_type.name,
+        "duration_minutes": member.appointment_type.duration_minutes,
+        "provider_name": member.provider_name,
+    }
+
+
+def _request_id(request: dict[str, Any] | None) -> str | None:
+    value = request.get("request_id") if request else None
+    return value if isinstance(value, str) and value else None
+
+
+def _remember_request(
+    session: Session,
+    *,
+    requester: Requester,
+    participants: list[FamilyMemberRequest],
+    preferences,
+    family: bool,
+    back_to_back: bool | None = None,
+    raw_preferences: dict[str, Any] | None = None,
+) -> str:
+    """Persist the one canonical scheduling request for this conversation.
+
+    A changed participant, type, provider, or preference starts a new request
+    revision and retires only incompatible booking proposals. Selecting another
+    option within the same request keeps the request id, so its old hold can be
+    superseded without losing the family's requirements.
+    """
+    conversation = requester.conversation
+    previous = scheduling_request(session, conversation.id)
+    participant_rows = [_participant_record(member) for member in participants]
+    candidate = {
+        "participants": participant_rows,
+        "preferences": {
+            **_request_preferences(preferences),
+            **(raw_preferences or {}),
+        },
+        "coordination": {
+            "family": family,
+            "same_day": family,
+            "back_to_back": family if back_to_back is None else bool(back_to_back),
+        },
+    }
+    previous_shape = {
+        "participants": (previous or {}).get("participants", []),
+        "preferences": (previous or {}).get("preferences", {}),
+        "coordination": (previous or {}).get("coordination", {}),
+    }
+    if previous is not None and previous_shape == candidate:
+        return _request_id(previous) or conversation.public_id
+
+    if previous is not None:
+        supersede_pending(
+            session,
+            conversation_id=conversation.id,
+            kinds=("booking",),
+            intent="new_booking",
+        )
+    request = {
+        **candidate,
+        "request_id": f"{conversation.public_id}:schedule:{secrets.token_urlsafe(8)}",
+        "revision": int((previous or {}).get("revision", 0)) + 1,
+    }
+    conversation.scheduling_request = request
+    session.flush()
+    return request["request_id"]
+
+
+def _merge_family_member_inputs(
+    session: Session, requester: Requester, members: list[FamilyMemberInput]
+) -> list[FamilyMemberInput]:
+    """Merge a partial conversational answer into the stored family request."""
+    existing = scheduling_request(session, requester.conversation.id) or {}
+    by_id: dict[int, FamilyMemberInput] = {}
+    for row in existing.get("participants", []):
+        patient = session.get(Patient, row.get("patient_id"))
+        if patient is not None:
+            by_id[patient.id] = FamilyMemberInput(
+                patient=patient,
+                appointment_type_code=row.get("appointment_type_code"),
+                provider_name=row.get("provider_name"),
+            )
+    for member in members:
+        current = by_id.get(member.patient.id)
+        by_id[member.patient.id] = FamilyMemberInput(
+            patient=member.patient,
+            appointment_type_code=(
+                member.appointment_type_code
+                if member.appointment_type_code is not None
+                else (current.appointment_type_code if current else None)
+            ),
+            provider_name=member.provider_name or (current.provider_name if current else None),
+        )
+    return list(by_id.values())
+
+
 def _first_name(patient: Patient) -> str:
     return patients.first_name(patient.full_name)
 
@@ -118,6 +243,7 @@ def slot_card(
     target_appointment_id: int | None = None,
     settled: bool = False,
     additional_visit: bool = False,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     """One clickable time. The card carries everything the patient needs to choose.
 
@@ -165,6 +291,7 @@ def slot_card(
         # even when this conversation already has an appointment.  The client
         # sends this provenance back during a freshness re-check and selection.
         "additional_visit": additional_visit,
+        "request_id": request_id,
     }
 
 
@@ -217,6 +344,7 @@ def family_option_cards(
     appointment_types: dict[int, AppointmentType],
     start_index: int = 0,
     settled: bool = False,
+    request_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """One card per complete family plan, carrying every member's own time.
 
@@ -237,11 +365,13 @@ def family_option_cards(
                 "option_id": identity,
                 "option_index": start_index + offset,
                 "option_identity": identity,
+                "request_id": request_id,
                 "slots": [
                     slot_card(
                         option,
                         appointment_types[option.patient_id or 0],
                         settled=settled,
+                        request_id=request_id,
                     )
                     | {"intent": "new_booking"}
                     for option in plan
@@ -401,6 +531,22 @@ def find_availability(
                 appointment_type,
             )
     if family_members:
+        request_id = _remember_request(
+            session,
+            requester=requester,
+            participants=family_members,
+            preferences=preferences,
+            family=True,
+            raw_preferences={
+                "date_phrases": list(date_phrases or []),
+                "start_date": start_date,
+                "time_windows": list(time_windows or []),
+                "weekdays": list(weekdays or []),
+                "exclude_weekdays": list(exclude_weekdays or []),
+                "range_days": range_days,
+                "provider_name": provider_name,
+            },
+        )
         return _group_answer(
             session,
             members=family_members,
@@ -408,6 +554,44 @@ def find_availability(
             preferences=preferences,
             base=base,
             scope=scope,
+            request_id=request_id,
+        )
+
+    request_id = None
+    if requester is not None:
+        request_id = _remember_request(
+            session,
+            requester=requester,
+            participants=[
+                FamilyMemberRequest(
+                    patient_id=patient.id,
+                    patient_first_name=_first_name(patient),
+                    appointment_type=appointment_type,
+                    provider_name=provider_name,
+                )
+            ],
+            preferences=preferences,
+            family=False,
+            raw_preferences={
+                "date_phrases": list(date_phrases or []),
+                "start_date": start_date,
+                "time_windows": list(time_windows or []),
+                "weekdays": list(weekdays or []),
+                "exclude_weekdays": list(exclude_weekdays or []),
+                "range_days": range_days,
+                "provider_name": provider_name,
+            },
+        )
+        scope = booking_policy.booking_scope(
+            session,
+            patients=targets,
+            conversation_id=requester.conversation_id,
+        )
+        base.update(
+            booking_mode=scope.mode,
+            desired_slot_count=scope.desired_slot_count(),
+            covered_people=len(scope.covered_patient_ids),
+            already_booked=scope.has_booked_visit,
         )
 
     # One request books once. While a booking card is waiting, searching again
@@ -461,7 +645,12 @@ def find_availability(
     options = booking_policy.restrict_plain_slots(result.options, scope)
 
     cards = [
-        slot_card(option, appointment_type, additional_visit=requests_additional)
+        slot_card(
+            option,
+            appointment_type,
+            additional_visit=requests_additional,
+            request_id=request_id,
+        )
         for option in options
     ]
     # A time outside an existing visit is still on offer (a move, or an extra
@@ -535,6 +724,7 @@ def _group_answer(
     preferences,
     base: dict[str, Any],
     scope: booking_policy.BookingScope,
+    request_id: str | None = None,
 ) -> AvailabilityAnswer:
     """Complete nearby same-day plans for a household, shaped as family options.
 
@@ -544,7 +734,11 @@ def _group_answer(
     """
     appointment_types = {member.patient_id: member.appointment_type for member in members}
     plans = search_nearby_family_plans(
-        session, members=members, preferences=preferences, max_plans=6
+        session,
+        members=members,
+        preferences=preferences,
+        max_plans=6,
+        max_days=max(1, (preferences.scan_bounds[1] - preferences.scan_bounds[0]).days + 1),
     )
     people = [member.patient_first_name for member in members]
     base.update(
@@ -560,9 +754,14 @@ def _group_answer(
             _ok(
                 **base,
                 available=False,
+                availability_status="unavailable",
+                availability_checked=True,
+                searched_from=preferences.scan_bounds[0].isoformat(),
+                searched_through=preferences.scan_bounds[1].isoformat(),
                 message=(
-                    "I couldn't find currently open times for everyone on those days. I can "
-                    "check other days, or tell me if you'd like separate visits."
+                    "I checked the requested date range but couldn't find a complete set of "
+                    "open times for everyone. We can try different dates, another provider, "
+                    "or separate visits."
                 ),
             ),
             [],
@@ -584,7 +783,9 @@ def _group_answer(
                 f"{' and '.join(people)}, ordered by closest appointment times. "
                 "One confirmation books everyone."
             ),
-            cards=family_option_cards(plans=plans, appointment_types=appointment_types),
+            cards=family_option_cards(
+                plans=plans, appointment_types=appointment_types, request_id=request_id
+            ),
         ),
         [option for plan in plans for option in plan],
         appointment_type,
@@ -702,6 +903,7 @@ def propose_booking(
     from_ui: bool = False,
     create_key: str | None = None,
     family_group_id: int | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     """Hold selected slots for a NEW visit and persist an awaiting-confirmation proposal.
 
@@ -780,6 +982,7 @@ def propose_booking(
         from_ui=from_ui,
         create_key=create_key,
         family_group_id=family_group_id,
+        request_id=request_id or _request_id(scheduling_request(session, requester.conversation_id)),
         visit_shape="household" if len(items) > 1 else "solo",
     )
     if not outcome.ok:
@@ -1258,6 +1461,45 @@ def _pending_booking(session: Session, requester: Requester) -> BookingProposal 
             if proposal.kind == "booking"
         ),
         None,
+    )
+
+
+def _pending_booking_for_request(
+    session: Session, requester: Requester, request_id: str | None
+) -> BookingProposal | None:
+    if not request_id:
+        return None
+    return next(
+        (
+            proposal
+            for proposal in pending_for_conversation(session, requester.conversation_id)
+            if proposal.kind == "booking" and proposal.request_id == request_id
+        ),
+        None,
+    )
+
+
+def _proposal_option_identity(proposal: BookingProposal) -> str:
+    return family_plan_identity(
+        [
+            SlotOption(
+                slot_ids=[],
+                stable_id=item.stable_slot_id or "",
+                provider_id=item.provider_id or 0,
+                provider_name=item.provider_name or "",
+                provider_credentials=item.provider_credentials or "",
+                provider_specialties=[],
+                appointment_type_code=item.appointment_type_code or "",
+                appointment_type_name=item.appointment_type_name or "",
+                starts_at=item.proposed_starts_at,
+                ends_at=item.proposed_starts_at,
+                duration_minutes=item.duration_minutes,
+                patient_id=item.patient_id,
+                patient_first_name=item.patient_first_name,
+            )
+            for item in sorted(proposal.items, key=lambda row: row.order_index)
+            if item.proposed_starts_at is not None
+        ]
     )
 
 
@@ -1795,6 +2037,7 @@ def proposal_card(proposal, *, include_actions: bool = True) -> dict[str, Any]:
     return {
         "type": "proposal",
         "proposal_id": proposal.public_id,
+        "request_id": proposal.request_id,
         "kind": proposal.kind,
         # Explicit, so a card, a tool result and a confirmation all agree on
         # whether this is a new visit or a move of an existing one.
@@ -2011,6 +2254,43 @@ def settle_superseded_grids(
     return output
 
 
+def reconcile_proposal_cards(
+    session: Session, cards: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Project proposal cards onto their persisted lifecycle status.
+
+    Pending is the only actionable state.  For every historical card, however,
+    the database knows whether it was rejected, expired, superseded, or
+    accepted, so the UI must not infer all non-pending states as superseded.
+    """
+    output: list[dict[str, Any]] = []
+    labels = {
+        ProposalStatus.REJECTED.value: "Cancelled",
+        ProposalStatus.SUPERSEDED.value: "Replaced by a newer option",
+        ProposalStatus.EXPIRED.value: "Expired",
+        ProposalStatus.ACCEPTED.value: "Confirmed",
+    }
+    for card in cards or []:
+        if not isinstance(card, dict) or card.get("type") not in {
+            "proposal", "family_proposal"
+        }:
+            output.append(dict(card) if isinstance(card, dict) else card)
+            continue
+        proposal_id = card.get("proposal_id")
+        proposal = find_by_public_id(session, proposal_id) if proposal_id else None
+        if proposal is None:
+            output.append({**card, "actions": []})
+            continue
+        projected = proposal_card(proposal, include_actions=proposal.status == ProposalStatus.PENDING.value)
+        if card.get("type") == "family_proposal" or len(proposal.items) > 1:
+            projected["type"] = "family_proposal"
+            projected["title"] = "Confirm family booking" if proposal.status == ProposalStatus.PENDING.value else labels.get(proposal.status, "Updated")
+        if proposal.status != ProposalStatus.PENDING.value:
+            projected["title"] = labels.get(proposal.status, "Updated")
+        output.append(projected)
+    return output
+
+
 def resolved_proposal_card(session: Session, proposal) -> dict[str, Any]:
     return {
         "type": "proposal",
@@ -2052,7 +2332,7 @@ def handoff_cards(entries: list[dict[str, Any]]) -> dict[str, Any]:
 @dataclass
 class FamilyMemberInput:
     patient: Patient
-    appointment_type_code: str
+    appointment_type_code: str | None
     provider_name: str | None = None
 
 
@@ -2111,55 +2391,120 @@ def family_search(
     date_phrases: list[str] | None = None,
     start_date: str | None = None,
     time_windows: list[str] | None = None,
+    weekdays: list[str] | None = None,
+    exclude_weekdays: list[str] | None = None,
     range_days: int | None = None,
+    provider_name: str | None = None,
+    allow_alternatives: bool = False,
     back_to_back: bool = True,
 ) -> dict[str, Any]:
-    """Find complete same-day family plans with nearby appointment times.
+    """Find complete same-day family plans, optionally as one continuous block.
 
     Read-only. Each card carries one time per person, so the number of times on
     a card is exactly how many visits one confirmation would book.
     """
-    del back_to_back  # retained for tool compatibility; gaps are now allowed
+    members = _merge_family_member_inputs(session, requester, members)
     requests, types, problem = _family_requests(session, requester, members)
     if problem is not None or requests is None or types is None:
         return problem or _fail("invalid_family", "I couldn't put that family together.")
+
+    stored = scheduling_request(session, requester.conversation_id) or {}
+    stored_preferences = stored.get("preferences") or {}
+    if not date_phrases and start_date is None and range_days is None:
+        date_phrases = stored_preferences.get("date_phrases") or []
+    start_date = start_date or stored_preferences.get("start_date")
+    time_windows = time_windows or stored_preferences.get("time_windows") or []
+    weekdays = weekdays or stored_preferences.get("weekdays") or []
+    exclude_weekdays = exclude_weekdays or stored_preferences.get("exclude_weekdays") or []
+    range_days = range_days or stored_preferences.get("range_days")
+    provider_name = provider_name or stored_preferences.get("provider_name")
+
+    if allow_alternatives and date_phrases:
+        date_phrases = [
+            phrase
+            if "whenever possible" in phrase.lower()
+            else f"{phrase} or whenever possible"
+            for phrase in date_phrases
+        ]
 
     preferences = date_parsing.resolve_preferences(
         start_date=start_date,
         date_phrases=date_phrases,
         time_windows=time_windows,
+        weekdays=weekdays,
+        exclude_weekdays=exclude_weekdays,
         range_days=range_days,
+        provider_name=provider_name,
     )
     if preferences.ambiguous:
         return _ok(ambiguous=True, message=preferences.clarification or "Which date did you mean?")
     if preferences.past_rejected and not preferences.days:
         return _ok(message="That date has already passed. Which upcoming day works?")
 
-    plans = search_nearby_family_plans(
-        session, members=requests, preferences=preferences, max_plans=6
+    request_id = _remember_request(
+        session,
+        requester=requester,
+        participants=requests,
+        preferences=preferences,
+        family=True,
+        back_to_back=back_to_back,
+        raw_preferences={
+            "date_phrases": list(date_phrases or []),
+            "start_date": start_date,
+            "time_windows": list(time_windows or []),
+            "weekdays": list(weekdays or []),
+            "exclude_weekdays": list(exclude_weekdays or []),
+            "range_days": range_days,
+            "provider_name": provider_name,
+        },
+    )
+
+    plan_search = search_back_to_back_plans if back_to_back else search_nearby_family_plans
+    plans = plan_search(
+        session,
+        members=requests,
+        preferences=preferences,
+        max_plans=6,
+        max_days=max(1, (preferences.scan_bounds[1] - preferences.scan_bounds[0]).days + 1),
     )
     if not plans:
         return _ok(
             available=False,
+            availability_status="unavailable",
+            availability_checked=True,
             people=[member.patient_first_name for member in requests],
+            searched_from=preferences.scan_bounds[0].isoformat(),
+            searched_through=preferences.scan_bounds[1].isoformat(),
+            alternative_dates_allowed=bool(preferences.fallback_allowed),
             message=(
-                "I couldn't find currently open times for everyone on those days. I can check "
-                "other days, or book you separately if you'd rather."
+                "I checked the requested date range but couldn't find a complete set of open "
+                "times for everyone. We can try different dates, a different provider, or "
+                "separate visits."
+            ),
+            next_step=(
+                "This is a complete availability result, not a system failure. Do not create a "
+                "callback unless the patient explicitly asks for a human."
             ),
         )
     plans = plans[:3]
     _FAMILY_PLAN_CACHE[_family_cache_key(requests)] = plans
     return _ok(
         available=True,
+        availability_status="available",
+        availability_checked=True,
         plan_count=len(plans),
         slots_per_option=len(requests),
         people=[member.patient_first_name for member in requests],
+        searched_from=preferences.scan_bounds[0].isoformat(),
+        searched_through=preferences.scan_bounds[1].isoformat(),
         message=(
             "Here are complete options with everyone's currently open times, ordered as close "
             "together as possible. Confirming holds the whole group; it's booked only after you "
             "confirm."
         ),
-        cards=family_option_cards(plans=plans, appointment_types=types),
+        cards=family_option_cards(
+            plans=plans, appointment_types=types, request_id=request_id
+        ),
     )
 
 
@@ -2201,6 +2546,79 @@ def family_options_after_conflict(
     return [card for card in refreshed.get("cards", []) if isinstance(card, dict)]
 
 
+def refresh_scheduling_request(
+    session: Session,
+    *,
+    requester: Requester,
+    alternative_day: bool = False,
+    request: dict[str, Any] | None = None,
+    alternative_day_anchor: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Run a fresh SQLite search from the canonical request, not old cards."""
+    request = request or scheduling_request(session, requester.conversation_id)
+    if not request:
+        return None
+    preferences = request.get("preferences") or {}
+    participants = request.get("participants") or []
+    date_phrases = [] if alternative_day else preferences.get("date_phrases") or []
+    start_date = None if alternative_day else preferences.get("start_date")
+    range_days = None if alternative_day else preferences.get("range_days")
+    if alternative_day:
+        anchor_preferences = (alternative_day_anchor or request).get("preferences") or {}
+        prior = date_parsing.resolve_preferences(
+            date_phrases=anchor_preferences.get("date_phrases") or [],
+            start_date=anchor_preferences.get("start_date"),
+            range_days=anchor_preferences.get("range_days"),
+        )
+        anchor_day = prior.days[-1] if prior.days else (prior.scan_end or prior.scan_start)
+        if anchor_day is not None:
+            start_date = (anchor_day + timedelta(days=1)).isoformat()
+        range_days = date_parsing.DEFAULT_SEARCH_DAYS
+    if len(participants) > 1:
+        members: list[FamilyMemberInput] = []
+        for row in participants:
+            patient = session.get(Patient, row.get("patient_id"))
+            if patient is None:
+                return _fail("invalid_request", "I couldn't match everyone in that request.")
+            members.append(
+                FamilyMemberInput(
+                    patient=patient,
+                    appointment_type_code=row.get("appointment_type_code"),
+                    provider_name=row.get("provider_name"),
+                )
+            )
+        return family_search(
+            session,
+            requester=requester,
+            members=members,
+            date_phrases=date_phrases,
+            start_date=start_date,
+            time_windows=preferences.get("time_windows") or [],
+            weekdays=preferences.get("weekdays") or [],
+            exclude_weekdays=preferences.get("exclude_weekdays") or [],
+            range_days=range_days,
+            provider_name=preferences.get("provider_name"),
+            back_to_back=(request.get("coordination") or {}).get("back_to_back", True),
+        )
+    if not participants:
+        return None
+    participant = participants[0]
+    return find_availability(
+        session,
+        patient=requester.patient,
+        patient_id=participant.get("patient_id"),
+        appointment_type_code=participant.get("appointment_type_code"),
+        date_phrases=date_phrases,
+        start_date=start_date,
+        time_windows=preferences.get("time_windows") or [],
+        weekdays=preferences.get("weekdays") or [],
+        exclude_weekdays=preferences.get("exclude_weekdays") or [],
+        range_days=range_days,
+        provider_name=preferences.get("provider_name"),
+        requester=requester,
+    ).payload
+
+
 def _family_requests(
     session: Session, requester: Requester, members: list[FamilyMemberInput]
 ) -> tuple[list[FamilyMemberRequest] | None, dict[int, AppointmentType] | None, dict | None]:
@@ -2237,6 +2655,17 @@ def _family_requests(
                     ),
                 ),
             )
+        if not member.appointment_type_code:
+            return (
+                None,
+                None,
+                _fail(
+                    "missing_appointment_type",
+                    f"Which type of visit should I book for { _first_name(member.patient) }?",
+                    needs_clarification=True,
+                    patient_first_name=_first_name(member.patient),
+                ),
+            )
         appointment_type, type_problem = _type_or_error(session, member.appointment_type_code)
         if appointment_type is None or type_problem is not None:
             return None, None, type_problem or _fail("unknown_type", "Unknown visit type.")
@@ -2271,9 +2700,13 @@ def hold_family_option(
     date_phrases: list[str] | None = None,
     start_date: str | None = None,
     time_windows: list[str] | None = None,
+    weekdays: list[str] | None = None,
+    exclude_weekdays: list[str] | None = None,
     range_days: int | None = None,
+    provider_name: str | None = None,
     summary: str | None = None,
     option_identity: str | None = None,
+    request_id: str | None = None,
     from_ui: bool = False,
 ) -> dict[str, Any]:
     """Hold one family option as a single combined proposal. Books nothing.
@@ -2283,6 +2716,37 @@ def hold_family_option(
     the card the patient saw (``option_identity``). Every run is re-checked for
     bookability, so a stale card can only fail, never book a taken time.
     """
+    requested_request_id = request_id
+    current_request_id = _request_id(scheduling_request(session, requester.conversation_id))
+    if requested_request_id is not None and requested_request_id != current_request_id:
+        return _fail(
+            "stale_request",
+            "That family option belongs to an earlier request. I can refresh the current options.",
+        )
+    stored = scheduling_request(session, requester.conversation_id) or {}
+    stored_preferences = stored.get("preferences") or {}
+    stored_coordination = stored.get("coordination") or {}
+    back_to_back = bool(stored_coordination.get("back_to_back", True))
+    if option_identity:
+        # A card click selects the option identity it rendered. Its preference
+        # fields are historical context, not a second model-authored request.
+        date_phrases = stored_preferences.get("date_phrases") or []
+        start_date = stored_preferences.get("start_date")
+        time_windows = stored_preferences.get("time_windows") or []
+        weekdays = stored_preferences.get("weekdays") or []
+        exclude_weekdays = stored_preferences.get("exclude_weekdays") or []
+        range_days = stored_preferences.get("range_days")
+        provider_name = stored_preferences.get("provider_name")
+    else:
+        if not date_phrases and start_date is None and range_days is None:
+            date_phrases = stored_preferences.get("date_phrases") or []
+        start_date = start_date or stored_preferences.get("start_date")
+        time_windows = time_windows or stored_preferences.get("time_windows") or []
+        weekdays = weekdays or stored_preferences.get("weekdays") or []
+        exclude_weekdays = exclude_weekdays or stored_preferences.get("exclude_weekdays") or []
+        range_days = range_days or stored_preferences.get("range_days")
+        provider_name = provider_name or stored_preferences.get("provider_name")
+    members = _merge_family_member_inputs(session, requester, members)
     requests, types, problem = _family_requests(session, requester, members)
     if problem is not None or requests is None or types is None:
         return problem or _fail("invalid_family", "I couldn't put that family together.")
@@ -2305,16 +2769,59 @@ def hold_family_option(
         start_date=start_date,
         date_phrases=date_phrases,
         time_windows=time_windows,
+        weekdays=weekdays,
+        exclude_weekdays=exclude_weekdays,
         range_days=range_days,
+        provider_name=provider_name,
     )
     if preferences.ambiguous:
         return _ok(ambiguous=True, message=preferences.clarification or "Which date did you mean?")
+
+    request_id = _remember_request(
+        session,
+        requester=requester,
+        participants=requests,
+        preferences=preferences,
+        family=True,
+        back_to_back=(stored.get("coordination") or {}).get("back_to_back", True),
+        raw_preferences={
+            "date_phrases": list(date_phrases or []),
+            "start_date": start_date,
+            "time_windows": list(time_windows or []),
+            "weekdays": list(weekdays or []),
+            "exclude_weekdays": list(exclude_weekdays or []),
+            "range_days": range_days,
+            "provider_name": provider_name,
+        },
+    )
+    active = _pending_booking_for_request(session, requester, request_id)
+    if (
+        active is not None
+        and option_identity
+        and option_identity == _proposal_option_identity(active)
+    ):
+        card = proposal_card(active, include_actions=True)
+        card["type"] = "family_proposal"
+        card["title"] = "Confirm family booking"
+        return _ok(
+            awaiting_confirmation=True,
+            family=True,
+            kind="booking",
+            intent="new_booking",
+            proposal_id=active.public_id,
+            proposal_ids=[active.public_id],
+            slot_count=len(active.items),
+            replayed=True,
+            message="That family option is already held for your confirmation.",
+            cards=[card],
+        )
 
     resolved = _family_plan_for_card(
         session,
         requests=requests,
         types=types,
         preferences=preferences,
+        back_to_back=back_to_back,
         option_index=option_index,
         start_index=start_index,
         option_identity=option_identity,
@@ -2323,8 +2830,13 @@ def hold_family_option(
         # The clicked card is a historical search result. Re-search the same
         # request before returning so the patient sees current complete plans,
         # not the stale option that just failed its atomic re-check.
-        fresh_plans = search_nearby_family_plans(
-            session, members=requests, preferences=preferences, max_plans=6
+        plan_search = search_back_to_back_plans if back_to_back else search_nearby_family_plans
+        fresh_plans = plan_search(
+            session,
+            members=requests,
+            preferences=preferences,
+            max_plans=6,
+            max_days=max(1, (preferences.scan_bounds[1] - preferences.scan_bounds[0]).days + 1),
         )[:3]
         if fresh_plans:
             _FAMILY_PLAN_CACHE[_family_cache_key(requests)] = fresh_plans
@@ -2334,11 +2846,31 @@ def hold_family_option(
             cards=family_option_cards(
                 plans=fresh_plans,
                 appointment_types=types,
+                request_id=request_id,
             ),
             next_step=(
                 "The clicked option is stale. Offer only the returned fresh family options; "
                 "do not retry the old option."
             ),
+        )
+
+    # Repeated selection of the same active option is a replay, not a new hold.
+    resolved_identity = family_plan_identity([option for option, _ in resolved])
+    if active is not None and _proposal_option_identity(active) == resolved_identity:
+        card = proposal_card(active, include_actions=True)
+        card["type"] = "family_proposal"
+        card["title"] = "Confirm family booking"
+        return _ok(
+            awaiting_confirmation=True,
+            family=True,
+            kind="booking",
+            intent="new_booking",
+            proposal_id=active.public_id,
+            proposal_ids=[active.public_id],
+            slot_count=len(active.items),
+            replayed=True,
+            message="That family option is already held for your confirmation.",
+            cards=[card],
         )
 
     # A family option is one record for the party. This search's booking is
@@ -2391,6 +2923,7 @@ def hold_family_option(
         intent="new_booking",
         summary=summary,
         family_group_id=_hold_family_group_id(session, requester),
+        request_id=request_id,
         from_ui=from_ui,
         visit_shape="household",
     )
@@ -2441,6 +2974,7 @@ def _family_plan_for_card(
     requests: list[FamilyMemberRequest],
     types: dict[int, AppointmentType],
     preferences,
+    back_to_back: bool,
     option_index: int,
     start_index: int | None,
     option_identity: str | None,
@@ -2463,8 +2997,13 @@ def _family_plan_for_card(
     if plan is None:
         # The cache is gone (a restart, or a chattier turn): recompute and match
         # the card's start times so the click still means the option it showed.
-        recomputed = search_nearby_family_plans(
-            session, members=requests, preferences=preferences, max_plans=6
+        plan_search = search_back_to_back_plans if back_to_back else search_nearby_family_plans
+        recomputed = plan_search(
+            session,
+            members=requests,
+            preferences=preferences,
+            max_plans=6,
+            max_days=max(1, (preferences.scan_bounds[1] - preferences.scan_bounds[0]).days + 1),
         )
         if option_identity:
             plan = next(
@@ -2515,6 +3054,12 @@ def _family_plan_for_card(
                 appointment_type,
             )
         )
+    if len(resolved) != len(requests):
+        return None
+    if {option.patient_id for option, _ in resolved} != {
+        request.patient_id for request in requests
+    }:
+        return None
     if len({option.stable_id for option, _ in resolved}) != len(resolved):
         return None
     return resolved
@@ -2618,7 +3163,10 @@ __all__ = [
     "propose_reschedule",
     "replacement_cards",
     "replacement_for_slot",
+    "reconcile_proposal_cards",
+    "refresh_scheduling_request",
     "resolved_proposal_card",
+    "scheduling_request",
     "slot_card",
     "with_live_proposals",
 ]

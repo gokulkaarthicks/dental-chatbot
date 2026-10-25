@@ -28,6 +28,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("conversations", "patient_session_id", "INTEGER"),
     ("conversations", "title", "VARCHAR(120)"),
     ("conversations", "last_message_at", "DATETIME"),
+    ("conversations", "scheduling_request", "JSON"),
     ("messages", "tool_call_id", "VARCHAR(64)"),
     ("messages", "tool_name", "VARCHAR(64)"),
     ("messages", "finished_at", "DATETIME"),
@@ -96,6 +97,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("booking_proposals", "confirm_outcome", "JSON"),
     # --- Phase 6: one request books a party once ---------------------------
     ("booking_proposals", "visit_shape", "VARCHAR(16)"),
+    ("booking_proposals", "request_id", "VARCHAR(128)"),
     ("appointments", "visit_shape", "VARCHAR(16)"),
     # --- Contact details for an unverified emergency caller ----------------
     ("patient_sessions", "contact_name", "VARCHAR(120)"),

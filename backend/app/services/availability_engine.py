@@ -555,19 +555,25 @@ def search_family_availability(
 ) -> list[list[SlotOption]]:
     """Combined proposals for a family, ordered by how close the visits are.
 
-    ``back_to_back`` is retained for tool compatibility, but family searches
-    now allow short gaps between visits. Every returned plan still contains one
-    currently open slot for every member on the same day, and plans are ranked
-    by the total waiting time between visits.
+    ``back_to_back`` selects the stricter continuous-block search. Every
+    returned plan still contains one currently open slot for every member on
+    the same day; partial plans are never returned.
     """
-    del back_to_back
-    return search_nearby_family_plans(
+    search = search_back_to_back_plans if back_to_back else search_nearby_family_plans
+    return search(
         session,
         members=members,
         preferences=preferences,
         max_plans=3,
+        max_days=_preference_days(preferences),
         now=now,
     )
+
+
+def _preference_days(preferences: ResolvedPreferences) -> int:
+    """The number of calendar days the caller actually asked us to inspect."""
+    first_day, last_day = preferences.scan_bounds
+    return max(1, (last_day - first_day).days + 1)
 
 
 MAX_FAMILY_CANDIDATES_PER_MEMBER = 32
@@ -740,10 +746,7 @@ def search_nearby_family_plans(
 
     providers = load_providers(session)
     scan_from = max(preferences.scan_bounds[0], current.date())
-    last_day = min(
-        preferences.scan_bounds[1],
-        scan_from + timedelta(days=max(1, max_days) - 1),
-    )
+    last_day = min(preferences.scan_bounds[1], scan_from + timedelta(days=max(1, max_days) - 1))
     plans: list[list[SlotOption]] = []
     seen: set[tuple[str, ...]] = set()
     day = scan_from

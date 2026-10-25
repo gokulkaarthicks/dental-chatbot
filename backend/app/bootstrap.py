@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 # 2: patient_sessions plus new columns on conversations/messages/app_metadata.
 # 3: slot holds, booking groups, proposal lifecycle, idempotency in-flight rows.
-SCHEMA_VERSION = 3
+# 4: canonical scheduling requests and proposal request identities.
+SCHEMA_VERSION = 4
 
 
 def create_schema() -> None:
@@ -62,4 +63,3 @@ def bootstrap_database(*, auto_seed: bool = True) -> SeedSummary | None:
     summary = seed.seed_database()
     logger.info("Auto-seed finished at %s", local_now_iso())
     return summary
-

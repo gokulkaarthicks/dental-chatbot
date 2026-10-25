@@ -179,3 +179,25 @@ def test_unreadable_phrase_surfaces_a_warning():
     resolved = resolve_preferences(date_phrases=["sometime"], today=WED)
     assert resolved.days == []
     assert resolved.warnings
+
+
+def test_any_day_is_flexible_default_window():
+    for phrase in (
+        "any day",
+        "anytime",
+        "whenever",
+        "flexible",
+        "I am fine with any day",
+        "any day to schedule",
+    ):
+        result = resolve_phrase(phrase, WED)
+        assert result.days == []
+        assert result.unreadable is False
+        assert result.warnings == []
+
+        resolved = resolve_preferences(date_phrases=[phrase], today=WED)
+        assert resolved.days == []
+        assert resolved.warnings == []
+        assert resolved.fallback_allowed is True
+        assert resolved.scan_start == WED
+        assert resolved.scan_end == WED + timedelta(days=20)

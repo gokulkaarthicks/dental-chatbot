@@ -66,8 +66,11 @@ def _messages_payload(db: DbSession, conversation: Conversation) -> list[ChatMes
         ChatMessageResponse(
             **{
                 **entry,
-                "cards": scheduling.settle_superseded_grids(
-                    db, conversation.id, entry.get("cards")
+                "cards": scheduling.reconcile_proposal_cards(
+                    db,
+                    scheduling.settle_superseded_grids(
+                        db, conversation.id, entry.get("cards")
+                    ),
                 ),
             }
         )
@@ -247,6 +250,7 @@ async def send_message(
         patient_session=record,
         patient_text=text,
         family_option_identity=(payload.action.option_identity if payload.action else None),
+        family_option_request_id=(payload.action.request_id if payload.action else None),
     )
 
     db.refresh(conversation)

@@ -10,6 +10,13 @@ const KIND_LABEL: Record<ProposalCard["kind"], string> = {
   cancellation: "Confirm cancellation",
 };
 
+const STATUS_LABEL: Record<string, string> = {
+  rejected: "Cancelled",
+  superseded: "Superseded",
+  expired: "Expired",
+  accepted: "Confirmed",
+};
+
 function ItemRow({ item }: { item: ProposalItem }) {
   const moving = Boolean(item.original_starts_at) && item.original_starts_at !== item.starts_at;
   return (
@@ -70,12 +77,14 @@ export function ProposalCardView({
       : "Confirm";
   const eyebrow = actionable
     ? KIND_LABEL[card.kind] ?? "Awaiting confirmation"
-    : "Earlier proposal";
-  const resolvedNote = isCancellation
-    ? "This cancellation card is no longer open."
-    : isReschedule
-      ? "This move is no longer open."
-      : "This hold is no longer open.";
+    : STATUS_LABEL[card.status] ?? "Earlier proposal";
+  const resolvedNote = STATUS_LABEL[card.status]
+    ? `This proposal is ${STATUS_LABEL[card.status].toLowerCase()}.`
+    : isCancellation
+      ? "This cancellation card is no longer open."
+      : isReschedule
+        ? "This move is no longer open."
+        : "This hold is no longer open.";
 
   return (
     <CardShell

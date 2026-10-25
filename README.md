@@ -6,6 +6,8 @@ Staff use a separate dashboard backed by the same SQLite database. It provides a
 
 ## Features
 
+
+
 ### Patient experience
 
 - Conversational patient interface with persisted conversation history.
@@ -19,12 +21,16 @@ Staff use a separate dashboard backed by the same SQLite database. It provides a
 - Appointment listing, rescheduling, and cancellation after verification.
 - Answers about insurance, self-pay, payment methods, hours, location, and clinic policies from configured practice data.
 
+
+
 ### Complex scheduling
 
 - Family bookings with a separate patient, appointment type, duration, and provider eligibility for each participant.
 - Coordinated contiguous, back-to-back options when the requested family shape can be satisfied.
 - One confirmation transaction for a family proposal. The requested participant count is preserved.
 - Booking-policy checks that prevent an existing patient or pending request from silently becoming an additional visit.
+
+
 
 ### Staff operations
 
@@ -35,15 +41,19 @@ Staff use a separate dashboard backed by the same SQLite database. It provides a
 - Staff appointment creation, rescheduling, cancellation, and completion.
 - Dashboard refresh after staff mutations so the displayed state follows the database.
 
+
+
 ## Technology stack
 
-| Area | Technology | Why it is used here |
-| --- | --- | --- |
-| Frontend | React 18, TypeScript, Vite, Lucide React | Typed client for chat, cards, clinic overview, and staff screens. |
-| Backend | Python 3.12, FastAPI, Pydantic | Typed HTTP APIs and deterministic workflow boundaries. |
-| AI | DeepSeek API through its OpenAI-compatible chat interface | Natural-language interpretation and tool selection. |
-| Persistence | SQLite, SQLAlchemy 2, SQLite WAL and foreign keys | Compact relational persistence for the assessment demo. |
-| Runtime | Docker Compose, nginx | Reproducible backend and frontend startup. |
+
+| Area        | Technology                                                | Why it is used here                                               |
+| ----------- | --------------------------------------------------------- | ----------------------------------------------------------------- |
+| Frontend    | React 18, TypeScript, Vite, Lucide React                  | Typed client for chat, cards, clinic overview, and staff screens. |
+| Backend     | Python 3.12, FastAPI, Pydantic                            | Typed HTTP APIs and deterministic workflow boundaries.            |
+| AI          | DeepSeek API through its OpenAI-compatible chat interface | Natural-language interpretation and tool selection.               |
+| Persistence | SQLite, SQLAlchemy 2, SQLite WAL and foreign keys         | Compact relational persistence for the assessment demo.           |
+| Runtime     | Docker Compose, nginx                                     | Reproducible backend and frontend startup.                        |
+
 
 The model-facing surface is small. Appointment decisions stay in Python and SQLite, where the state transitions are inspectable.
 
@@ -59,6 +69,8 @@ flowchart TD
     D --> DB[(SQLite and SQLAlchemy)]
     C --> DB
 ```
+
+
 
 The patient and staff interfaces are separate frontend paths, but both call FastAPI. Services cover conversations, patient sessions, registration, verification, scheduling, emergencies, staff authentication, and handoff. SQLAlchemy models cover patients, providers, appointment types, availability, slot claims, appointments, booking groups, proposals, conversations, sessions, alerts, requests, audit records, and idempotency records.
 
@@ -88,27 +100,31 @@ The key is read by the backend container only. Start the application with:
 docker compose up --build -d
 ```
 
-Open http://localhost:8080 for patient chat and http://localhost:8080/staff for the staff dashboard. The seeded demo login is `root` / `root`. The backend is at http://localhost:8000, Swagger UI is at http://localhost:8000/docs, and health is at http://localhost:8000/api/health. The frontend nginx proxy also exposes Swagger UI at http://localhost:8080/docs.
+Open [http://localhost:8080](http://localhost:8080) for patient chat and [http://localhost:8080/staff](http://localhost:8080/staff) for the staff dashboard. The seeded demo login is `root` / `root`. The backend is at [http://localhost:8000](http://localhost:8000), Swagger UI is at [http://localhost:8000/docs](http://localhost:8000/docs), and health is at [http://localhost:8000/api/health](http://localhost:8000/api/health). The frontend nginx proxy also exposes Swagger UI at [http://localhost:8080/docs](http://localhost:8080/docs).
 
 ## Demo database and development commands
 
 Startup creates the schema and seeds an empty database. Fixtures contain three providers, eight patients in two family groups, three appointment types, 60 days of 30-minute availability per provider, six upcoming appointments, three completed visits, staff records, pending requests and alerts, conversations, proposals, audit rows, and idempotency rows. Seed keys make repeated seeding idempotent.
 
-| Command | Behavior |
-| --- | --- |
-| `make seed` | Inserts missing fixtures without deleting existing records. |
-| `make reset-demo` | Stops writers, recreates the database, reseeds, issues a new reset generation, and restarts services. |
-| `make demo-status` | Prints the fixture summary as JSON. |
-| `make backend-logs` | Follows backend logs. |
-| `make frontend-logs` | Follows frontend logs. |
-| `docker compose up --build -d` | Builds and starts both services. |
-| `docker compose logs -f` | Follows both services. |
-| `docker compose ps` | Shows service status. |
-| `docker compose down` | Stops services and preserves the named volume. |
+
+| Command                        | Behavior                                                                                              |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `make seed`                    | Inserts missing fixtures without deleting existing records.                                           |
+| `make reset-demo`              | Stops writers, recreates the database, reseeds, issues a new reset generation, and restarts services. |
+| `make demo-status`             | Prints the fixture summary as JSON.                                                                   |
+| `make backend-logs`            | Follows backend logs.                                                                                 |
+| `make frontend-logs`           | Follows frontend logs.                                                                                |
+| `docker compose up --build -d` | Builds and starts both services.                                                                      |
+| `docker compose logs -f`       | Follows both services.                                                                                |
+| `docker compose ps`            | Shows service status.                                                                                 |
+| `docker compose down`          | Stops services and preserves the named volume.                                                        |
+
 
 An ordinary restart preserves records because SQLite is stored on the named `dental-receptionist-clinic-data` volume. `make reset-demo` deletes the database and its WAL and shared-memory sidecars, recreates the schema, and invalidates prior conversation IDs, patient sessions, staff sessions, pending proposals, and idempotency records. `docker compose down -v` also removes the volume.
 
 ## Core workflows
+
+
 
 ### New patient registration
 
@@ -168,7 +184,7 @@ Structured logs include request IDs and operational event names. API keys and pa
 
 ## Testing and validation
 
-[`MANUAL_VALIDATION.md`](./MANUAL_VALIDATION.md) is the acceptance checklist for registration, booking, existing-patient management, dates, family scheduling, emergencies, persistence, staff operations, concurrency, idempotency, recovery, and database integrity. [`DEMO_SCRIPT.md`](./DEMO_SCRIPT.md) provides a reviewer walkthrough.
+`[MANUAL_VALIDATION.md](./MANUAL_VALIDATION.md)` is the acceptance checklist for registration, booking, existing-patient management, dates, family scheduling, emergencies, persistence, staff operations, concurrency, idempotency, recovery, and database integrity. `[DEMO_SCRIPT.md](./DEMO_SCRIPT.md)` provides a reviewer walkthrough.
 
 Automated backend tests are in `backend/tests` and can be run with:
 
@@ -176,6 +192,8 @@ Automated backend tests are in `backend/tests` and can be run with:
 cd backend
 pytest
 ```
+
+
 
 ### Pre-push quality gate
 
@@ -187,12 +205,14 @@ Install the hook once per clone (it is not committed to `.git`):
 make hooks      # same as: bash scripts/install-git-hooks.sh
 ```
 
-| Command | Behavior |
-| --- | --- |
-| `make hooks` | Installs the `pre-push` hook into `.git/hooks`. |
+
+| Command      | Behavior                                                    |
+| ------------ | ----------------------------------------------------------- |
+| `make hooks` | Installs the `pre-push` hook into `.git/hooks`.             |
 | `make check` | Runs the exact same gate manually (lint auto-fix + pytest). |
-| `make lint` | Auto-fixes and reports backend lint issues. |
-| `make test` | Runs backend tests only. |
+| `make lint`  | Auto-fixes and reports backend lint issues.                 |
+| `make test`  | Runs backend tests only.                                    |
+
 
 The hook needs `ruff` and `pytest` on a Python it can find (a `.venv` in the repo, or `python3`). Emergency bypass for a single push: `git push --no-verify`.
 
@@ -202,14 +222,18 @@ No current pass count is claimed because tests were not run for this documentati
 
 I used one conversational agent because the receptionist needs one coherent workflow. FastAPI tools provide the language boundary, while deterministic services enforce identity, appointment rules, transactions, and authorization. SQLite keeps the assessment self-contained and inspectable. Conversation persistence supports multi-turn scheduling and refresh. The staff dashboard provides human handoff. Booking correctness, stale-state handling, concurrency, and recoverable failures take priority over additional AI capabilities.
 
-| Priority | Feature | Reason |
-| --- | --- | --- |
-| 1 | Identity and authorization | Records must not be exposed to the wrong session. |
-| 1 | Deterministic booking and rescheduling | A fluent answer is not useful if database state is wrong. |
-| 1 | Holds, conflict checks, idempotency, and rollback | Actions can be retried or race with another writer. |
-| 2 | Conversation persistence and cards | Multi-turn scheduling needs recoverable context and explicit confirmation. |
-| 2 | Staff handoff and emergency alerts | Exceptions need a visible operational path. |
-| 3 | Additional assistant capabilities | Useful only after core scheduling is trustworthy. |
+
+| Priority | Feature                                           | Reason                                                                     |
+| -------- | ------------------------------------------------- | -------------------------------------------------------------------------- |
+| 1        | Identity and authorization                        | Records must not be exposed to the wrong session.                          |
+| 1        | Deterministic booking and rescheduling            | A fluent answer is not useful if database state is wrong.                  |
+| 1        | Holds, conflict checks, idempotency, and rollback | Actions can be retried or race with another writer.                        |
+| 2        | Conversation persistence and cards                | Multi-turn scheduling needs recoverable context and explicit confirmation. |
+| 2        | Staff handoff and emergency alerts                | Exceptions need a visible operational path.                                |
+| 3        | Additional assistant capabilities                 | Useful only after core scheduling is trustworthy.                          |
+
+
+
 
 ## Production scaling considerations
 
@@ -239,6 +263,8 @@ These are proposed production changes, not capabilities claimed by this reposito
 - There is no real payment processing or voice calling interface.
 - Emergency alerts are stored for staff review, with no external SMS, email, paging, or emergency-service integration.
 - DeepSeek is required for normal conversation; the fallback cannot replace receptionist workflow.
+
+
 
 ## Repository structure
 
@@ -276,6 +302,8 @@ These are proposed production changes, not capabilities claimed by this reposito
 └── .env.example
 ```
 
+
+
 ## Demo Video
 
-Demo video link will be added here.
+[https://www.loom.com/share/8d67378fb2d94603a41f5e24ec323074](https://www.loom.com/share/8d67378fb2d94603a41f5e24ec323074)

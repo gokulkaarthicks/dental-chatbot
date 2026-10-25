@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -97,6 +98,83 @@ def _tool_call_from_payload(payload: dict[str, Any]) -> ToolCall | None:
     return ToolCall(id=str(call_id), name=str(name), arguments=arguments)
 
 
+# Some DeepSeek-compatible deployments return the model's native DSML tool
+# syntax in ``message.content`` instead of populating ``message.tool_calls``.
+# Keep this adapter deliberately narrow: only an invoke block containing
+# parameter elements is accepted, and every parameter is decoded before it
+# reaches the normal Pydantic tool boundary.
+_DSML_INVOKE_START = re.compile(
+    r"<[^>]*DSML[^>]*\binvoke\s+name\s*=\s*['\"]([^'\"]+)['\"][^>]*>",
+    re.IGNORECASE,
+)
+_DSML_INVOKE_END = re.compile(
+    r"\\?\s*</?[^>]*DSML[^>]*\binvoke\s*>",
+    re.IGNORECASE,
+)
+_DSML_PARAMETER_START = re.compile(
+    r"<[^>]*DSML[^>]*\bparameter\s+name\s*=\s*['\"]([^'\"]+)['\"]"
+    r"(?:\s+string\s*=\s*['\"]([^'\"]+)['\"])?[^>]*>",
+    re.IGNORECASE,
+)
+_DSML_PARAMETER_END = re.compile(
+    r"\\?\s*</[^>]*DSML[^>]*\bparameter\s*>",
+    re.IGNORECASE,
+)
+_DSML_CALLS_WRAPPER = re.compile(
+    r"\\?\s*</?[^>]*DSML[^>]*\bcalls\s*>",
+    re.IGNORECASE,
+)
+
+
+def _decode_dsml_value(raw: str, *, is_string: str | None) -> Any:
+    value = raw.strip().rstrip("\\").strip()
+    if (is_string or "").lower() == "true":
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        # A malformed typed value must still reach Pydantic as text, where it
+        # gets the same invalid-argument response as an ordinary tool call.
+        return value
+
+
+def _tool_calls_from_dsml(content: str) -> tuple[str, list[ToolCall]]:
+    """Extract DeepSeek DSML invokes and return content with them removed."""
+    if "DSML" not in content or "invoke" not in content:
+        return content, []
+
+    calls: list[ToolCall] = []
+    spans: list[tuple[int, int]] = []
+    for index, match in enumerate(_DSML_INVOKE_START.finditer(content), start=1):
+        end = _DSML_INVOKE_END.search(content, match.end())
+        if end is None:
+            continue
+        arguments: dict[str, Any] = {}
+        for parameter in _DSML_PARAMETER_START.finditer(content, match.end(), end.start()):
+            parameter_end = _DSML_PARAMETER_END.search(content, parameter.end(), end.start())
+            if parameter_end is None:
+                continue
+            arguments[parameter.group(1)] = _decode_dsml_value(
+                content[parameter.end() : parameter_end.start()],
+                is_string=parameter.group(2),
+            )
+        calls.append(
+            ToolCall(
+                id=f"dsml_{index}",
+                name=match.group(1),
+                arguments=json.dumps(arguments),
+            )
+        )
+        spans.append((match.start(), end.end()))
+
+    if not spans:
+        return content, []
+    cleaned = content
+    for start, end in reversed(spans):
+        cleaned = f"{cleaned[:start]}{cleaned[end:]}"
+    return _DSML_CALLS_WRAPPER.sub("", cleaned).strip(), calls
+
+
 class DeepSeekClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
@@ -147,10 +225,11 @@ class DeepSeekClient:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
 
+        tools_enabled = bool(tools)
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES + 1):
             try:
-                return self._post(payload)
+                return self._post(payload, tools_enabled=tools_enabled)
             except (DeepSeekTimeout, DeepSeekUnavailable, DeepSeekRateLimited) as exc:
                 last_error = exc
                 if attempt >= MAX_RETRIES:
@@ -169,7 +248,7 @@ class DeepSeekClient:
 
         raise last_error or DeepSeekUnavailable("DeepSeek request failed")
 
-    def _post(self, payload: dict[str, Any]) -> AssistantTurn:
+    def _post(self, payload: dict[str, Any], *, tools_enabled: bool = True) -> AssistantTurn:
         started = time.monotonic()
         try:
             with httpx.Client(timeout=self._timeout()) as client:
@@ -192,12 +271,20 @@ class DeepSeekClient:
             raise DeepSeekRateLimited(f"status {response.status_code}")
 
         if response.status_code >= 400:
-            # 400/401/403/422 are not retryable. Log the status only: bodies can
-            # echo prompt content and must not enter logs.
+            # 400/401/403/422 are not retryable. Log status and a coarse error
+            # type only: bodies can echo prompt content and must not enter logs.
+            error_type = None
+            try:
+                error = (response.json() or {}).get("error") or {}
+                if isinstance(error, dict):
+                    error_type = error.get("type") or error.get("code")
+            except (ValueError, AttributeError):
+                error_type = None
             logger.error(
-                "DeepSeek rejected request: status=%s latency_ms=%s",
+                "DeepSeek rejected request: status=%s latency_ms=%s error_type=%s",
                 response.status_code,
                 elapsed_ms,
+                error_type,
             )
             raise DeepSeekBadResponse(f"status {response.status_code}")
 
@@ -208,11 +295,23 @@ class DeepSeekClient:
         except (ValueError, IndexError, AttributeError) as exc:
             raise DeepSeekBadResponse("unparseable response") from exc
 
+        content = (message.get("content") or "").strip()
         tool_calls: list[ToolCall] = []
         for raw_call in message.get("tool_calls") or []:
             parsed = _tool_call_from_payload(raw_call)
             if parsed is not None:
                 tool_calls.append(parsed)
+        content, dsml_calls = _tool_calls_from_dsml(content)
+        # DSML is only a fallback when tools were actually offered. Promoting
+        # markup into synthetic tool_call ids after tools were withdrawn corrupts
+        # the next provider round (DeepSeek answers 400).
+        if not tool_calls and tools_enabled:
+            tool_calls = dsml_calls
+        elif dsml_calls and not tools_enabled:
+            logger.info(
+                "Ignoring %s DSML tool invoke(s); tools were not offered this round",
+                len(dsml_calls),
+            )
 
         deepseek_status(
             logger,
@@ -223,7 +322,7 @@ class DeepSeekClient:
         )
 
         return AssistantTurn(
-            content=(message.get("content") or "").strip(),
+            content=content,
             tool_calls=tool_calls,
             finish_reason=choice.get("finish_reason"),
         )

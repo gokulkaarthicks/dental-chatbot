@@ -122,6 +122,10 @@ export function markProposalsResolved(
       if (pending.has(card.proposal_id)) return card;
       if (card.type !== "proposal" && card.type !== "family_proposal") return card;
       if (card.actions.length === 0 && card.status !== "pending") return card;
+      // The backend reconciles the exact terminal status from SQLite. Do not
+      // collapse rejected, expired, or accepted history into superseded merely
+      // because only pending proposals are returned by the live endpoint.
+      if (card.status !== "pending") return { ...card, actions: [] } as ChatCard;
       touched = true;
       return { ...card, status: "superseded", actions: [] } as ChatCard;
     });

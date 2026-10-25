@@ -59,6 +59,9 @@ class BookingProposal(Base, TimestampMixin):
     # card left over from a request that is already booked can be told apart from
     # a genuine additional visit. NULL on older rows.
     visit_shape: Mapped[str | None] = mapped_column(String(16))
+    # Binds alternatives and their lifecycle to the one structured request in
+    # the conversation.  Historical proposals retain the old request id.
+    request_id: Mapped[str | None] = mapped_column(String(128))
     summary: Mapped[str | None] = mapped_column(Text)
     reset_generation: Mapped[str] = mapped_column(String(36), nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

@@ -91,13 +91,6 @@ type Options = {
 const EMPTY_SET: ReadonlySet<string> = new Set();
 const MIN_REFRESH_MS = 1500;
 
-/** "A", "A and B", "A, B, and C" — names read naturally in a chat request. */
-function joinNames(names: string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
-}
-
 function cardProposalId(card: ChatCard): string | null {
   return "proposal_id" in card ? card.proposal_id : null;
 }
@@ -691,22 +684,17 @@ export function useCardActions({
   const holdFamilyOption = useCallback(
     async (card: FamilyOptionCard) => {
       if (card.settled) return;
-      // Keep the clicked option's identity in the request. Names alone are not
-      // enough when two family cards contain the same people; without this the
-      // assistant has to ask "earlier or later?" and the click loses its meaning.
-      const names = joinNames(
-        card.slots.map((slot) => slot.patient_first_name).filter((name): name is string => Boolean(name)),
-      );
-      const selectedTimes = card.slots
-        .map((slot) => `${slot.patient_first_name ?? "patient"} at ${slot.time ?? slot.time_range}`)
-        .join(", ");
-      const text = names
-        ? `Please hold the clicked family option for ${names}. The selected times are ${selectedTimes}.`
-        : `Please hold the clicked family option at ${selectedTimes}.`;
+      // The action carries the opaque option and request identities. Do not
+      // reconstruct the selection from names or formatted times in chat text.
+      const text = "Please hold the selected family option.";
       await send(
         text,
         {
-          action: { type: "family_option_click", option_identity: card.option_id },
+          action: {
+            type: "family_option_click",
+            option_identity: card.option_id,
+            request_id: card.request_id,
+          },
         },
       );
     },

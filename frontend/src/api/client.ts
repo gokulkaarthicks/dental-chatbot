@@ -206,6 +206,7 @@ export type ChatSendMessageResponse = {
 export type ChatAction = {
   type: "family_option_click";
   option_identity: string;
+  request_id?: string | null;
 };
 
 type ChatOptions = { signal?: AbortSignal; action?: ChatAction };

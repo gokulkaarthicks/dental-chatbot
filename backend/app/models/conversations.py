@@ -61,6 +61,10 @@ class Conversation(Base, TimestampMixin):
     started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_message_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # The canonical scheduling intent for this thread.  Chat history remains
+    # conversational context, but participant/type/date changes must update one
+    # structured request rather than asking each model turn to reconstruct it.
+    scheduling_request: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     patient_session: Mapped[PatientSession | None] = relationship(back_populates="conversations")
     messages: Mapped[list[Message]] = relationship(

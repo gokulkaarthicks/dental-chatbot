@@ -55,6 +55,7 @@ export type SlotCard = {
    * used to answer a re-check: its availability is unknown, not confirmed.
    */
   require_open?: boolean;
+  request_id?: string | null;
 };
 
 export type ProposalItem = {
@@ -77,6 +78,7 @@ export type ProposalCard = {
   /** Why the proposal exists; mirrors `kind` except that it is explicit. */
   intent?: "new_booking" | "reschedule" | "cancellation" | null;
   status: string;
+  request_id?: string | null;
   title: string;
   items: ProposalItem[];
   summary?: string | null;
@@ -94,6 +96,7 @@ export type FamilyOptionCard = {
   /** This historical family search is no longer an offer after a hold/book. */
   settled?: boolean;
   require_open?: boolean;
+  request_id?: string | null;
 };
 
 export type ConfirmedAppointment = {

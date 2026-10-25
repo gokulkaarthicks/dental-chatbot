@@ -28,6 +28,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from sqlalchemy.orm import Session
 
@@ -66,6 +67,7 @@ REASK_TIMES = re.compile(
     r"|\bwhat(?:'s| is) available\b|\banything (?:open|available|else)\b"
     r"|\b(?:show|see|check) (?:me )?(?:the )?(?:times|slots|availability)(?: again)?\b"
     r"|\b(?:refresh|refreshed)\b[^?]{0,20}\b(?:availability|times|slots)\b"
+    r"|\b(?:another|different) (?:day|date)\b"
     r"|\bwhat (?:times|slots) do you have\b|\bshow me again\b",
     re.IGNORECASE,
 )
@@ -73,7 +75,50 @@ REASK_TIMES = re.compile(
 
 def is_time_reask(text: str) -> bool:
     """Whether the patient asked to be shown times again, rather than a new day."""
-    return bool(REASK_TIMES.search(text or ""))
+    value = text or ""
+    if REASK_TIMES.search(value):
+        return True
+    return any(
+        len(word) >= 7 and SequenceMatcher(None, word.lower(), "availability").ratio() >= 0.72
+        for word in re.findall(r"[a-z]+", value.lower())
+    )
+
+
+def is_alternative_day_request(text: str) -> bool:
+    return bool(re.search(r"\b(?:another|different) (?:day|date)\b", text or "", re.IGNORECASE))
+
+
+_AVAILABILITY_REASK_TOOLS = {
+    "get_booking_context",
+    "get_session_context",
+    "register_child_for_verified_parent",
+    "search_availability",
+    "search_family_availability",
+}
+
+
+def _availability_reask_tools(tools: list[dict], request: dict | None) -> list[dict]:
+    """Keep a fresh-availability turn from selecting a historical card.
+
+    A natural-language re-ask is not a card selection. The model may extract
+    new people or preferences, but it must not dispatch a hold or confirm tool
+    based on an older option mentioned in the transcript. Child registration
+    remains available because a family re-ask may name a child who is not linked
+    yet.
+    """
+    if not request:
+        return tools
+    allowed = set(_AVAILABILITY_REASK_TOOLS)
+    participants = request.get("participants") or []
+    if isinstance(participants, list) and len(participants) > 1:
+        # A family request must not be collapsed into a solo search just
+        # because the model omitted one of the people on a follow-up turn.
+        allowed.discard("search_availability")
+    return [
+        tool
+        for tool in tools
+        if (tool.get("function") or {}).get("name") in allowed
+    ]
 
 
 @dataclass
@@ -106,7 +151,7 @@ def _provider_tool_calls(turn: AssistantTurn) -> list[dict]:
 
 
 def _add_family_option_action(
-    provider_messages: list[dict], option_identity: str | None
+    provider_messages: list[dict], option_identity: str | None, request_id: str | None = None
 ) -> None:
     """Give the model a card identity without exposing it in the transcript."""
     if not option_identity or not provider_messages:
@@ -118,7 +163,8 @@ def _add_family_option_action(
         f"{system.get('content', '')}\n\n"
         "Internal UI action: the patient clicked a family option card. When "
         "calling hold_family_option, pass this exact opaque option_identity: "
-        f"{option_identity}. Do not repeat this identity in your reply."
+        f"{option_identity}. Also pass request_id {request_id or '(the current request)'}. "
+        "Do not repeat either identifier in your reply."
     )
 
 
@@ -129,6 +175,7 @@ def run_turn(
     patient_session: PatientSession,
     patient_text: str,
     family_option_identity: str | None = None,
+    family_option_request_id: str | None = None,
     client: DeepSeekClient | None = None,
 ) -> TurnResult:
     text = (patient_text or "").strip()
@@ -155,19 +202,23 @@ def run_turn(
     # belongs to, and repeat it further down.
     turn_floor = conversations.last_message_id(session, conversation)
     reask = is_time_reask(text)
+    request_before_turn = scheduling.scheduling_request(session, conversation.id)
 
     history = conversations.history(session, conversation)
     provider_messages: list[dict] = [
         {"role": "system", "content": _system_prompt(session, patient_session)},
         *conversations.to_provider_messages(history),
     ]
-    _add_family_option_action(provider_messages, family_option_identity)
+    _add_family_option_action(provider_messages, family_option_identity, family_option_request_id)
 
     context = ToolContext(
         session=session, patient_session=patient_session, conversation_id=conversation.id
     )
     tools = openai_tool_schemas()
+    if reask and family_option_identity is None:
+        tools = _availability_reask_tools(tools, request_before_turn)
     client = client or DeepSeekClient()
+    availability_reask = reask and family_option_identity is None
 
     try:
         reply, cards = _run_loop(
@@ -179,7 +230,33 @@ def run_turn(
             context=context,
             client=client,
             family_option_identity=family_option_identity,
+            family_option_request_id=family_option_request_id,
+            availability_reask=availability_reask,
         )
+        if reask:
+            verified = patient_sessions.verified_patient(session, patient_session)
+            if verified is not None:
+                refreshed = scheduling.refresh_scheduling_request(
+                    session,
+                    requester=scheduling.Requester(
+                        patient=verified,
+                        patient_session=patient_session,
+                        conversation=conversation,
+                    ),
+                    alternative_day=is_alternative_day_request(text),
+                    request=scheduling.scheduling_request(session, conversation.id),
+                    alternative_day_anchor=request_before_turn,
+                )
+                if refreshed is not None:
+                    refreshed_cards = _cards_from(refreshed)
+                    reply = refreshed.get("message") or reply
+                    cards = refreshed_cards
+                    for message in reversed(conversations.history(session, conversation)):
+                        if message.role == "assistant" and not message.tool_calls:
+                            message.cards = refreshed_cards or None
+                            message.content = reply
+                            session.flush()
+                            break
     except DeepSeekError as exc:
         # Type only: provider messages never enter the log.
         logger.warning("DeepSeek failure during turn: %s", type(exc).__name__)
@@ -332,6 +409,8 @@ def _run_loop(
     context: ToolContext,
     client: DeepSeekClient,
     family_option_identity: str | None = None,
+    family_option_request_id: str | None = None,
+    availability_reask: bool = False,
 ) -> tuple[str, list[dict]]:
     """Run the tool loop, returning the final prose and the cards to render.
 
@@ -341,11 +420,39 @@ def _run_loop(
     a stale slot grid next to the proposal that replaced it).
     """
     cards: list[dict] = []
+    search_dispatched = False
+    availability_exhausted = False
+    last_tool_message = ""
     for round_index in range(MAX_TOOL_ROUNDS):
-        turn = client.chat(messages=provider_messages, tools=tools)
+        tools_this_round: list[dict] = (
+            []
+            if (availability_reask and search_dispatched) or availability_exhausted
+            else tools
+        )
+        turn = client.chat(
+            messages=provider_messages,
+            tools=tools_this_round,
+        )
+
+        # After tools are withdrawn (empty search, re-ask already searched), the
+        # provider sometimes still emits tool_calls or DSML markup. Executing
+        # those and replaying synthetic ids on the next round yields HTTP 400.
+        if turn.tool_calls and not tools_this_round:
+            reply = (turn.content or "").strip() or last_tool_message or (
+                "I checked what's open and don't have a complete set for everyone "
+                "on those days. Would you like a different day, or is a different "
+                "time of day okay?"
+                if availability_exhausted
+                else ""
+            )
+            conversations.append_assistant_message(
+                session, conversation, content=reply, cards=cards or None
+            )
+            session.commit()
+            return reply, cards
 
         if not turn.tool_calls:
-            reply = turn.content.strip() or ""
+            reply = turn.content.strip() or last_tool_message or ""
             conversations.append_assistant_message(
                 session, conversation, content=reply, cards=cards or None
             )
@@ -354,6 +461,7 @@ def _run_loop(
 
         calls = turn.tool_calls[:MAX_TOOL_CALLS_PER_ROUND]
         pending = _provider_tool_calls(turn)[: len(calls)]
+        dsml_sourced = any(call.id.startswith("dsml_") for call in calls)
 
         stored = conversations.append_assistant_message(
             session,
@@ -369,7 +477,28 @@ def _run_loop(
 
         round_cards: list[dict] = []
         for call in calls:
-            result = _execute(session, context, call)
+            if call.name in {"search_availability", "search_family_availability"}:
+                search_dispatched = True
+            result = _execute(
+                session,
+                context,
+                call,
+                family_option_identity=family_option_identity,
+                family_option_request_id=family_option_request_id,
+            )
+            if isinstance(result, dict) and result.get("message"):
+                last_tool_message = str(result["message"])
+            if (
+                call.name
+                in {"search_availability", "search_family_availability", "create_staff_request"}
+                and isinstance(result, dict)
+                and result.get("availability_checked") is True
+                and not result.get("cards")
+            ):
+                # A complete empty search is terminal for this model turn. Do
+                # not let the provider turn its own no-result response into a
+                # repeated search or callback loop.
+                availability_exhausted = True
             round_cards.extend(_cards_from(result))
             conversations.append_tool_message(
                 session,
@@ -390,13 +519,31 @@ def _run_loop(
         # the system prompt are both refreshed before the next model round.
         _sync_patient(session, conversation, patient_session)
         _refresh_system_prompt(provider_messages, session, patient_session)
-        _add_family_option_action(provider_messages, family_option_identity)
+        _add_family_option_action(
+            provider_messages, family_option_identity, family_option_request_id
+        )
+
+        # Synthetic DSML tool_call ids are not accepted on the next provider
+        # round. Stop here and speak from the tool result instead of risking a
+        # 400 that surfaces as "Something went wrong on my end."
+        if dsml_sourced:
+            reply = last_tool_message or (
+                "I've got that noted. What would you like to do next?"
+            )
+            conversations.append_assistant_message(
+                session, conversation, content=reply, cards=cards or None
+            )
+            session.commit()
+            return reply, cards
 
         if round_index == MAX_TOOL_ROUNDS - 1:
             logger.info("Tool round limit reached for conversation %s", conversation.public_id)
             return (
-                "I've gathered what I need for now. The front desk will follow up to "
-                "confirm the next step.",
+                last_tool_message
+                or (
+                    "I've gathered what I need for now. The front desk will follow up to "
+                    "confirm the next step."
+                ),
                 cards,
             )
 
@@ -491,7 +638,30 @@ def _attach_cards(
     conversations.append_assistant_message(session, conversation, content="", cards=cards)
 
 
-def _execute(session: Session, context: ToolContext, call: ToolCall) -> dict:
+def _execute(
+    session: Session,
+    context: ToolContext,
+    call: ToolCall,
+    *,
+    family_option_identity: str | None = None,
+    family_option_request_id: str | None = None,
+) -> dict:
+    if call.name == "hold_family_option" and family_option_identity:
+        try:
+            arguments = json.loads(call.arguments) if call.arguments.strip() else {}
+        except (TypeError, ValueError):
+            arguments = {}
+        if isinstance(arguments, dict):
+            # The browser action is the authority for which family option was
+            # clicked. The model supplies the family members and index, but it
+            # cannot accidentally select a different historical option.
+            arguments["option_identity"] = family_option_identity
+            arguments["request_id"] = family_option_request_id
+            call = ToolCall(
+                id=call.id,
+                name=call.name,
+                arguments=json.dumps(arguments),
+            )
     try:
         result = execute_tool(context, call.name, call.arguments)
     except Exception:  # noqa: BLE001 - execute_tool already guards; belt and braces
@@ -561,8 +731,11 @@ def _visible(session: Session, conversation: Conversation) -> list[dict]:
     return [
         {
             **entry,
-            "cards": scheduling.settle_superseded_grids(
-                session, conversation.id, entry.get("cards")
+            "cards": scheduling.reconcile_proposal_cards(
+                session,
+                scheduling.settle_superseded_grids(
+                    session, conversation.id, entry.get("cards")
+                ),
             ),
         }
         for entry in conversations.visible_messages(conversations.history(session, conversation))

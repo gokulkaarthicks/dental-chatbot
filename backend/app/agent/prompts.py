@@ -48,7 +48,9 @@ HARD_RULES = """Non-negotiable rules
    for. If a date is genuinely ambiguous, ask which they mean. If they changed their mind, just
    search again. The dates the words mean are listed in SESSION STATE; if the patient restates
    their own date ("October 27"), pass it in date_phrases as they said it rather than assuming
-   which weekday it falls on.
+   which weekday it falls on. If they say they are fine with any day, anytime, whenever, or
+   that they are flexible, search immediately with date_phrases like ["any day"] (or omit a
+   named day and use range_days) instead of asking them to pick a specific weekday.
 6. Never ask again for details the patient already gave or that are already stored (see SESSION
    STATE). If a correction is needed, fix just that field with update_patient_details.
 7. Do not give clinical advice, diagnoses, or medication instructions. For pain, offer an
@@ -98,8 +100,9 @@ TOOL_GUIDANCE = """Using your tools
 - Household booking: when the patient asks for more than one person, call get_booking_context
   first, then call search_family_availability with one member entry per person and each person's
   visit type. The family tool is the only household availability path. It returns up to three
-  complete same-day plans ranked by how close the visits are. Short gaps are fine; a household
-  booking with only one time in it is wrong: never offer single times for two people.
+  complete same-day plans, preferring one continuous back-to-back block. Set back_to_back=false
+  only when the patient permits gaps. A household booking with only one time in it is wrong:
+  never offer single times for two people.
 - Count first: get_booking_context tells you how many times the request needs (solo = 1,
   household = one per person) and whether one is already held or booked. Hold exactly that
   many, inside one card. Never hold a second booking for the same person.
@@ -171,6 +174,14 @@ TOOL_GUIDANCE = """Using your tools
   patient and children on their account.
   Another adult in the household needs to contact us themselves; say so plainly instead of
   offering them a time.
+- If a family availability search returns no cards, do not immediately create a callback just
+  because the first search failed. Retry the family search from the complete stored request once.
+  A complete empty search is a scheduling result, not a staff failure: explain that no complete
+  family option was found and offer different dates, providers, or coordination preferences.
+  Create a callback only when the availability operation itself fails or the patient explicitly
+  asks for a human callback. When they then say any day or that they are flexible, search again
+  with that open preference (date_phrases=["any day"] or allow_alternatives=true) rather than
+  asking which Monday they meant.
 - Pain or urgency: call report_emergency. If it says life_threatening, give the 911 guidance
   right away and do not continue with scheduling in that message. If is_update is true, re-report
   so worsening details reach the front desk.

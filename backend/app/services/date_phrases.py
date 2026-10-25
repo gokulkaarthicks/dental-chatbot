@@ -47,6 +47,25 @@ class PhraseResult:
     scan_days: int | None = None
 
 
+_FLEXIBLE_PHRASE = re.compile(
+    r"^(?:"
+    r"any(?:\s*time|\s+day(?:\s+(?:works|is\s+fine|is\s+ok(?:ay)?|is\s+good))?)?"
+    r"|whenever(?:\s+(?:works|possible|is\s+fine))?"
+    r"|flexible"
+    r"|doesn'?t matter"
+    r"|no preference"
+    r"|i(?:'m| am) fine with any(?:\s+day)?"
+    r"|any day (?:to|for) schedule"
+    r"|i am fine with any day(?:\s+to\s+schedule)?"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def _is_flexible_phrase(text: str) -> bool:
+    return bool(_FLEXIBLE_PHRASE.fullmatch(text.strip()))
+
+
 def weekday_index(raw: str | None) -> int | None:
     """Accept full names, abbreviations, and plurals ("tuesdays")."""
     if not raw:
@@ -240,6 +259,12 @@ def resolve_phrase(phrase: str, today: date) -> PhraseResult:
 
     if re.fullmatch(r"(?:the\s+)?day after tomorrow", text):
         return _only_future([today + timedelta(days=2)], today)
+
+    # Open-ended flexibility is not a named day. Return a readable empty result
+    # so preference resolution falls through to the default scan window without
+    # warning the model that the phrase was unreadable.
+    if _is_flexible_phrase(text):
+        return PhraseResult(days=[])
 
     # --- weekends -----------------------------------------------------------
     if re.fullmatch(r"(?:this|next|coming|the coming)?\s*weekend", text):

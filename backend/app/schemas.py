@@ -230,6 +230,7 @@ class ChatFamilyOptionAction(BaseModel):
 
     type: Literal["family_option_click"]
     option_identity: str = Field(min_length=1, max_length=512)
+    request_id: str | None = Field(default=None, max_length=128)
 
 
 class ChatSendMessageRequest(BaseModel):

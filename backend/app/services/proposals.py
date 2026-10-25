@@ -67,7 +67,9 @@ from app.models import (
     BookingGroup,
     BookingProposal,
     Conversation,
+    FamilyMember,
     IdempotencyRecord,
+    Patient,
     ProposalItem,
     ProposalStatus,
     SlotClaim,
@@ -292,6 +294,7 @@ def create_proposal(
     cancellation_reason: str | None = None,
     intent: str | None = None,
     visit_shape: str | None = None,
+    request_id: str | None = None,
 ) -> Outcome:
     """Create a pending proposal and hold its slots (or replay ``create_key``).
 
@@ -412,6 +415,7 @@ def create_proposal(
                 visit_shape=(
                     (visit_shape or "solo") if kind == "booking" else None
                 ),
+                request_id=request_id,
                 # Ordinary bookings never reference existing intervals; reschedule
                 # and cancellation fill this in below once validated.
                 held_slot_ids=None,
@@ -1387,6 +1391,51 @@ def _belongs_to_conversation_patient(proposal: BookingProposal, patient_id: int)
     return conversation.patient_id == patient_id
 
 
+def _patient_allowed_on_proposal(
+    session: Session, proposal: BookingProposal, patient_id: int
+) -> bool:
+    """Whether this conversation may confirm a visit for ``patient_id``.
+
+    Solo bookings and reschedules are the verified patient only. A household
+    booking may also include minors in the proposal's family group -- the same
+    people ``check_family_authorisation`` allowed when the hold was created.
+    Applying the solo ownership rule to household items was rejecting every
+    child's time as ``slot_taken`` and superseding the hold on confirm.
+    """
+    if _belongs_to_conversation_patient(proposal, patient_id):
+        return True
+    if proposal.kind != "booking" or _visit_shape(proposal) != "household":
+        return False
+    conversation = proposal.conversation
+    group_id = proposal.family_group_id
+    if conversation is None or conversation.patient_id is None or group_id is None:
+        return False
+    owner_link = session.scalars(
+        select(FamilyMember).where(
+            FamilyMember.family_group_id == group_id,
+            FamilyMember.patient_id == conversation.patient_id,
+        )
+    ).first()
+    member_link = session.scalars(
+        select(FamilyMember).where(
+            FamilyMember.family_group_id == group_id,
+            FamilyMember.patient_id == patient_id,
+        )
+    ).first()
+    if owner_link is None or member_link is None:
+        return False
+    other = session.get(Patient, patient_id)
+    if other is None or other.date_of_birth is None:
+        return False
+    from app.timeutil import clinic_today
+
+    today = clinic_today()
+    age = today.year - other.date_of_birth.year - (
+        (today.month, today.day) < (other.date_of_birth.month, other.date_of_birth.day)
+    )
+    return age < 18
+
+
 def _visit_shape(proposal: BookingProposal) -> str:
     """``solo`` or ``household``: one visit, or one per person in the party.
 
@@ -1514,12 +1563,12 @@ def _revalidate(
     if item.provider_id is None or item.proposed_starts_at is None:
         item.issue = "This time is missing its provider or start time."
         return None
-    if item.patient_id is not None and not _belongs_to_conversation_patient(
-        proposal, item.patient_id
+    if item.patient_id is not None and not _patient_allowed_on_proposal(
+        session, proposal, item.patient_id
     ):
-        # A reschedule moves the *conversation owner's* visit. A proposal whose
-        # item names somebody else (a different household member, a tampered
-        # row) is not something this conversation may confirm.
+        # Reschedule/solo: only the conversation owner. Household booking: the
+        # owner plus minors in the held family group. Rejecting children here
+        # used to surface as a false slot_taken and retire the family card.
         item.issue = "This time belongs to a different patient."
         return None
     appointment_type = (

@@ -75,10 +75,19 @@ class ResolvedPreferences:
     past_rejected: bool = False
     scan_start: date | None = None
     scan_end: date | None = None
+    # An explicit date followed by "or whenever possible" is preferred, not
+    # exclusive.  Keep the preferred day first while allowing the normal search
+    # horizon as a fallback.
+    fallback_allowed: bool = False
 
     def accepts_day(self, day: date) -> bool:
         if self.days:
-            return day in self.days
+            in_requested_range = day in self.days or (
+                self.fallback_allowed and day >= min(self.days)
+            )
+            return in_requested_range and (
+                self.weekday_filter is None or day.weekday() in self.weekday_filter
+            )
         if self.weekday_filter is not None:
             return day.weekday() in self.weekday_filter
         return True
@@ -96,7 +105,7 @@ class ResolvedPreferences:
     def scan_bounds(self) -> tuple[date, date]:
         """Inclusive day range to query when no explicit days were named."""
         if self.days:
-            return self.days[0], self.days[-1]
+            return self.days[0], self.scan_end or self.days[-1]
         start = max(self.scan_start or self.today, self.today)
         end = self.scan_end or start
         return start, max(start, end)
@@ -233,7 +242,23 @@ def resolve_preferences(
     explicit: list[date] = []
     for phrase in _normalized_phrases(date_phrases):
         resolved.requested.append(phrase)
-        outcome = resolve_phrase(phrase, current)
+        normalized = re.sub(
+            r"\s+(?:or|if)\s+(?:whenever|when)\s+possible\s*$", "", phrase,
+            flags=re.IGNORECASE,
+        )
+        if normalized != phrase:
+            resolved.fallback_allowed = True
+        # Pure flexibility ("any day", "whenever") means the default scan window,
+        # not an unreadable date. Mark fallback so nearby days stay in play.
+        if re.fullmatch(
+            r"any(?:\s*time|\s+day(?:\s+\w+){0,4})?|whenever(?:\s+\w+){0,2}|flexible|"
+            r"doesn'?t matter|no preference|i(?:'m| am) fine with any(?:\s+day)?(?:\s+\w+){0,4}",
+            normalized,
+            flags=re.IGNORECASE,
+        ):
+            resolved.fallback_allowed = True
+            continue
+        outcome = resolve_phrase(normalized, current)
         resolved.warnings.extend(outcome.warnings)
         if outcome.past:
             resolved.past_rejected = True
@@ -243,11 +268,21 @@ def resolve_preferences(
             resolved.clarification = outcome.clarification or resolved.clarification
         if outcome.unreadable and not outcome.warnings:
             resolved.warnings.append(f"I couldn't read '{phrase}' as a date.")
+        # A flexible phrase resolves to no named days and is not unreadable:
+        # keep scanning the default window instead of warning.
+        if not outcome.days and not outcome.unreadable and not outcome.past and not outcome.ambiguous:
+            resolved.fallback_allowed = True
+            continue
         explicit.extend(day for day in outcome.days if day >= current)
 
     if explicit:
         resolved.days = sorted(set(explicit))
-        resolved.scan_start, resolved.scan_end = resolved.days[0], resolved.days[-1]
+        resolved.scan_start = resolved.days[0]
+        resolved.scan_end = (
+            resolved.days[0] + timedelta(days=DEFAULT_SEARCH_DAYS - 1)
+            if resolved.fallback_allowed
+            else resolved.days[-1]
+        )
         _apply_weekday_filter(resolved, weekdays, exclude_weekdays)
         _apply_windows(resolved, time_windows)
         return resolved

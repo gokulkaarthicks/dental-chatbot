@@ -57,9 +57,12 @@ logger = logging.getLogger(__name__)
 
 
 class SearchAvailabilityArgs(ToolArguments):
-    appointment_type: str = Field(
-        default="checkup",
-        description="'cleaning', 'checkup', or 'emergency'.",
+    appointment_type: str | None = Field(
+        default=None,
+        description=(
+            "'cleaning', 'checkup', or 'emergency'. Omit only when the stored scheduling "
+            "request already specifies the visit type."
+        ),
     )
     date_phrases: list[str] = Field(
         default_factory=list,
@@ -242,8 +245,12 @@ class CancelArgs(AppointmentTargetArgs):
 
 class FamilyMemberArgs(ToolArguments):
     patient_first_name: str = Field(description="First name of the family member.")
-    appointment_type: str = Field(
-        default="checkup", description="'cleaning', 'checkup', 'emergency'."
+    appointment_type: str | None = Field(
+        default=None,
+        description=(
+            "Visit type for this person. Required unless this person's type is already in the "
+            "stored scheduling request; never silently default a family member to checkup."
+        ),
     )
     provider_name: str | None = Field(
         default=None, description="Preferred dentist for this person."
@@ -262,10 +269,22 @@ class FamilyAvailabilityArgs(ToolArguments):
     date_phrases: list[str] = Field(default_factory=list)
     start_date: str | None = None
     time_windows: list[str] = Field(default_factory=list)
+    weekdays: list[str] = Field(default_factory=list)
+    exclude_weekdays: list[str] = Field(default_factory=list)
     range_days: int | None = Field(default=None, ge=1, le=120)
-    back_to_back: bool = Field(
+    provider_name: str | None = None
+    allow_alternatives: bool = Field(
         default=False,
-        description="Legacy compatibility flag; family options may include short gaps.",
+        description=(
+            "True when the patient prefers the named date but explicitly accepts other dates."
+        ),
+    )
+    back_to_back: bool = Field(
+        default=True,
+        description=(
+            "Prefer one continuous block with each visit immediately after the previous one. "
+            "Set false only when the patient permits gaps between family visits."
+        ),
     )
 
 
@@ -279,10 +298,16 @@ class FamilyOptionArgs(ToolArguments):
             "option_index when the patient clicked a card."
         ),
     )
+    request_id: str | None = Field(
+        default=None, description="The structured request_id from the clicked family card."
+    )
     date_phrases: list[str] = Field(default_factory=list)
     start_date: str | None = None
     time_windows: list[str] = Field(default_factory=list)
+    weekdays: list[str] = Field(default_factory=list)
+    exclude_weekdays: list[str] = Field(default_factory=list)
     range_days: int | None = Field(default=None, ge=1, le=120)
+    provider_name: str | None = None
     back_to_back: bool = False
     summary: str | None = None
 
@@ -401,6 +426,26 @@ def _family_member_patients(
     resolved: list[FamilyMemberInput] = []
     for member in members:
         key = member.patient_first_name.strip().lower()
+        if key in {
+            "both",
+            "btoh",  # common one-word typo in a short clarification reply
+            "both kids",
+            "both children",
+            "the kids",
+            "all children",
+        }:
+            # "Both" is an answer to which child, not a request to discard the
+            # verified parent or choose only the first matching child.
+            for patient in allowed:
+                if patient.id not in {item.patient.id for item in resolved}:
+                    resolved.append(
+                        FamilyMemberInput(
+                            patient=patient,
+                            appointment_type_code=member.appointment_type,
+                            provider_name=member.provider_name,
+                        )
+                    )
+            continue
         patient = by_first_name.get(key)
         if patient is None:
             return None, _error(
@@ -456,17 +501,47 @@ def _tool_search_availability(ctx: ToolContext, args: SearchAvailabilityArgs) ->
             provider_name=args.provider_name,
         )
 
+    # A re-ask such as "current availability" often arrives without a second
+    # structured extraction from the model. Reuse the canonical request rather
+    # than silently turning it into a new checkup search with empty preferences.
+    stored = scheduling.scheduling_request(ctx.session, requester.conversation_id) or {}
+    stored_preferences = stored.get("preferences") or {}
+    stored_participants = stored.get("participants") or []
+    if len(stored_participants) > 1:
+        return _error(
+            "family_search_required",
+            (
+                "This request includes multiple family members. Use search_family_availability "
+                "with every stored participant and their own appointment type; do not run a "
+                "solo availability search."
+            ),
+            next_step="Call search_family_availability with the complete stored family request.",
+        )
+    stored_type = (
+        stored_participants[0].get("appointment_type_code")
+        if len(stored_participants) == 1 and isinstance(stored_participants[0], dict)
+        else None
+    )
+    appointment_type = args.appointment_type or stored_type or "checkup"
+    date_phrases = args.date_phrases or stored_preferences.get("date_phrases") or []
+    start_date = args.start_date or stored_preferences.get("start_date")
+    time_windows = args.time_windows or stored_preferences.get("time_windows") or []
+    weekdays = args.weekdays or stored_preferences.get("weekdays") or []
+    exclude_weekdays = args.exclude_weekdays or stored_preferences.get("exclude_weekdays") or []
+    range_days = args.range_days or stored_preferences.get("range_days")
+    provider_name = args.provider_name or stored_preferences.get("provider_name")
+
     answer = scheduling.find_availability(
         ctx.session,
         patient=patient,
-        appointment_type_code=args.appointment_type,
-        date_phrases=args.date_phrases,
-        start_date=args.start_date,
-        time_windows=args.time_windows,
-        weekdays=args.weekdays,
-        exclude_weekdays=args.exclude_weekdays,
-        range_days=args.range_days,
-        provider_name=args.provider_name,
+        appointment_type_code=appointment_type,
+        date_phrases=date_phrases,
+        start_date=start_date,
+        time_windows=time_windows,
+        weekdays=weekdays,
+        exclude_weekdays=exclude_weekdays,
+        range_days=range_days,
+        provider_name=provider_name,
         requester=requester,
         group_first_name=args.group_first_name,
         requests_additional=args.additional_visit,
@@ -1041,14 +1116,22 @@ def _tool_search_family_availability(
     if member_problem is not None or members is None:
         return member_problem or _error("unknown_family_member", "I couldn't match those names.")
 
+    stored = scheduling.scheduling_request(ctx.session, requester.conversation_id) or {}
+    stored_preferences = stored.get("preferences") or {}
     return scheduling.family_search(
         ctx.session,
         requester=requester,
         members=members,
-        date_phrases=args.date_phrases,
-        start_date=args.start_date,
-        time_windows=args.time_windows,
-        range_days=args.range_days,
+        date_phrases=args.date_phrases or stored_preferences.get("date_phrases") or [],
+        start_date=args.start_date or stored_preferences.get("start_date"),
+        time_windows=args.time_windows or stored_preferences.get("time_windows") or [],
+        weekdays=args.weekdays or stored_preferences.get("weekdays") or [],
+        exclude_weekdays=args.exclude_weekdays
+        or stored_preferences.get("exclude_weekdays")
+        or [],
+        range_days=args.range_days or stored_preferences.get("range_days"),
+        provider_name=args.provider_name or stored_preferences.get("provider_name"),
+        allow_alternatives=args.allow_alternatives,
         back_to_back=args.back_to_back,
     )
 
@@ -1061,6 +1144,9 @@ def _tool_hold_family_option(ctx: ToolContext, args: FamilyOptionArgs) -> dict[s
     if member_problem is not None or members is None:
         return member_problem or _error("unknown_family_member", "I couldn't match those names.")
 
+    stored = scheduling.scheduling_request(ctx.session, requester.conversation_id) or {}
+    stored_preferences = stored.get("preferences") or {}
+
     # One proposal containing every member's appointment, so confirmation is a
     # single transaction: the whole family is booked, or nobody is. Holding is
     # refused while another booking is pending or already booked.
@@ -1070,10 +1156,16 @@ def _tool_hold_family_option(ctx: ToolContext, args: FamilyOptionArgs) -> dict[s
         members=members,
         option_index=args.option_index,
         option_identity=args.option_identity,
-        date_phrases=args.date_phrases,
-        start_date=args.start_date,
-        time_windows=args.time_windows,
-        range_days=args.range_days,
+        request_id=args.request_id,
+        date_phrases=args.date_phrases or stored_preferences.get("date_phrases") or [],
+        start_date=args.start_date or stored_preferences.get("start_date"),
+        time_windows=args.time_windows or stored_preferences.get("time_windows") or [],
+        weekdays=args.weekdays or stored_preferences.get("weekdays") or [],
+        exclude_weekdays=args.exclude_weekdays
+        or stored_preferences.get("exclude_weekdays")
+        or [],
+        range_days=args.range_days or stored_preferences.get("range_days"),
+        provider_name=args.provider_name or stored_preferences.get("provider_name"),
         summary=args.summary,
     )
 
@@ -1092,7 +1184,17 @@ def _tool_get_booking_context(ctx: ToolContext, args: BookingContextArgs) -> dic
     del args
 
     allowed, _ = scheduling.check_family_authorisation(ctx.session, requester)
-    patients = [requester.patient, *allowed]
+    stored = scheduling.scheduling_request(ctx.session, requester.conversation_id) or {}
+    requested_ids = {
+        row.get("patient_id")
+        for row in stored.get("participants", [])
+        if row.get("patient_id") is not None
+    }
+    patients = [
+        patient
+        for patient in [requester.patient, *allowed]
+        if not requested_ids or patient.id in requested_ids
+    ]
     scope = booking_policy.booking_scope(
         ctx.session, patients=patients, conversation_id=requester.conversation_id
     )
@@ -1235,6 +1337,106 @@ def _tool_create_staff_request(ctx: ToolContext, args: StaffRequestArgs) -> dict
     conversation_id = ctx.conversation_id
     patient = ctx.verified_patient
     topic = args.topic.strip().lower()
+
+    # A failed model-side family search is not evidence that the schedule is
+    # unavailable. Before turning a scheduling miss into a human callback, use
+    # the canonical, verified family request to perform one fresh SQLite search.
+    # If it produces complete options, return those cards and keep the booking
+    # in chat. Explicit non-scheduling callbacks and genuinely empty searches
+    # still follow the normal human handoff path.
+    if topic == "callback" and patient is not None:
+        details_lower = args.details.lower()
+        scheduling_terms = ("availability", "available", "slot", "booking", "appointment")
+        availability_failure_terms = (
+            "could not",
+            "couldn't",
+            "failed",
+            "unavailable",
+            "no availability",
+            "no cards",
+            "stale",
+            "no longer",
+        )
+        alternative_terms = (
+            "alternative",
+            "another day",
+            "different day",
+            "other day",
+            "flexible",
+            "whenever",
+        )
+        human_request_terms = (
+            "human",
+            "staff",
+            "front desk",
+            "call me",
+            "callback",
+            "representative",
+        )
+        stored = scheduling.scheduling_request(ctx.session, conversation_id) or {}
+        if len(stored.get("participants") or []) > 1 and any(
+            term in details_lower for term in scheduling_terms
+        ) and any(term in details_lower for term in availability_failure_terms) and not any(
+            term in details_lower for term in human_request_terms
+        ):
+            requester, requester_problem = _requester(ctx)
+            refreshed: dict[str, Any] | None = None
+            refresh_failed = False
+            if requester is not None and requester_problem is None:
+                try:
+                    # Re-run the canonical request first. This clears stale
+                    # proposal/card state without changing who or what the
+                    # family asked to book.
+                    refreshed = scheduling.refresh_scheduling_request(
+                        ctx.session, requester=requester, request=stored
+                    )
+                    # If the patient said alternatives were acceptable but the
+                    # model omitted that preference from the date phrase, move
+                    # past the searched range once while preserving every
+                    # participant, duration, window, and provider preference.
+                    if (
+                        refreshed
+                        and not refreshed.get("cards")
+                        and any(term in details_lower for term in alternative_terms)
+                    ):
+                        refreshed = scheduling.refresh_scheduling_request(
+                            ctx.session,
+                            requester=requester,
+                            alternative_day=True,
+                            request=scheduling.scheduling_request(
+                                ctx.session, requester.conversation_id
+                            ),
+                            alternative_day_anchor=stored,
+                        )
+                except Exception:  # noqa: BLE001 - classify as an automation failure
+                    logger.exception("Family availability recovery failed")
+                    refresh_failed = True
+
+            if refreshed and refreshed.get("cards"):
+                count = len(stored.get("participants") or [])
+                refreshed["message"] = (
+                    "I found current family options. Choose one of the cards to hold all "
+                    f"{count} visits together."
+                )
+                refreshed["grounded"] = True
+                return refreshed
+
+            if refreshed and refreshed.get("availability_checked") and not refresh_failed:
+                # An empty, complete search is not a staff-system failure. Keep
+                # the conversation in scheduling so the patient can change
+                # dates/provider/coordination preferences without a duplicate
+                # or premature callback being created.
+                refreshed["message"] = (
+                    "I checked the requested range and couldn't find a complete set of times "
+                    "for everyone. We can try different dates, another provider, or separate "
+                    "visits."
+                )
+                refreshed["next_step"] = (
+                    "Do not create a callback from this availability result. Ask which date, "
+                    "provider, or coordination preference the patient wants to change."
+                )
+                refreshed["grounded"] = True
+                return refreshed
 
     request_type = {
         "insurance": RequestType.BILLING,
@@ -1399,9 +1601,9 @@ SCHEDULING_TOOL_SPECS: tuple[ToolSpec, ...] = (
         name="search_family_availability",
         description=(
             "Find currently available times for several household members (self plus children), "
-            "with all visits on the same day and ranked as close together as possible. Short "
-            "gaps are allowed; each option has a time for every person, so one confirmation "
-            "books everyone. Different visit types and durations are supported."
+            "with all visits on the same day. Prefer one continuous back-to-back block unless "
+            "the patient permits gaps; each option has a time for every person, so one "
+            "confirmation books everyone. Different visit types and durations are supported."
         ),
         args_model=FamilyAvailabilityArgs,
         handler=_tool_search_family_availability,
