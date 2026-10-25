@@ -184,8 +184,6 @@ Structured logs include request IDs and operational event names. API keys and pa
 
 ## Testing and validation
 
-`[MANUAL_VALIDATION.md](./MANUAL_VALIDATION.md)` is the acceptance checklist for registration, booking, existing-patient management, dates, family scheduling, emergencies, persistence, staff operations, concurrency, idempotency, recovery, and database integrity. `[DEMO_SCRIPT.md](./DEMO_SCRIPT.md)` provides a reviewer walkthrough.
-
 Automated backend tests are in `backend/tests` and can be run with:
 
 ```bash
@@ -305,8 +303,6 @@ These are proposed production changes, not capabilities claimed by this reposito
 │   ├── Dockerfile
 │   └── nginx.conf
 ├── scripts/                     # pre-push lint + test gate (git hooks)
-├── DEMO_SCRIPT.md
-├── MANUAL_VALIDATION.md
 ├── Makefile
 ├── docker-compose.yml
 └── .env.example
