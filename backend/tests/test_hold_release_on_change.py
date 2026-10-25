@@ -27,7 +27,6 @@ from app.models import AppointmentStatus, SlotClaim, utcnow
 from app.services import appointments, scheduling
 from app.services.proposals import (
     HOLD_MINUTES,
-    PROPOSAL_TTL_MINUTES,
     find_by_public_id,
     hold_deadline,
     pending_for_conversation,
@@ -54,20 +53,14 @@ from tests.test_reschedule_workflow import (  # noqa: F401 - pytest fixtures
     world_session,
 )
 
-
 # --------------------------------------------------------------------------- #
 # The window itself
 # --------------------------------------------------------------------------- #
 
 
-def test_the_hold_window_is_short_and_shorter_than_the_proposal_window():
-    """A click reserves a couple of minutes, not half an hour.
-
-    ``PROPOSAL_TTL_MINUTES`` is longer on purpose: the card stays confirmable
-    after the hold lapses, and confirmation revalidates before booking.
-    """
+def test_the_hold_window_is_a_couple_of_minutes():
+    """A click reserves a couple of minutes, not half an hour."""
     assert 0 < HOLD_MINUTES <= 5
-    assert PROPOSAL_TTL_MINUTES > HOLD_MINUTES
 
 
 def test_hold_deadline_is_the_configured_window_from_now():
@@ -75,7 +68,7 @@ def test_hold_deadline_is_the_configured_window_from_now():
     assert hold_deadline(now) - now == timedelta(minutes=HOLD_MINUTES)
 
 
-def test_a_created_proposal_expires_after_the_short_window(db, world_session):
+def test_a_created_proposal_holds_only_for_the_short_window(db, world_session):
     session, world, requester = world_session
     before = utcnow()
     result = call(
@@ -221,7 +214,8 @@ def test_a_lapsed_hold_is_released_and_not_offered_as_pending(db, world_session)
 
     assert released == [held]
     assert active_holds(db, held) == 0
-    assert pending_for_conversation(session, requester.conversation.id) == []
+    # The card is still confirmable: the hold ended, the choice did not.
+    assert find_by_public_id(session, held).status == "pending"
 
 
 def test_a_lapsed_hold_can_still_be_confirmed_when_the_time_is_still_open(db, world_session):
@@ -270,6 +264,34 @@ def test_release_expired_holds_accepts_the_public_conversation_id(db, world_sess
         reading.commit()
 
     assert released == [result["proposal_id"]]
+
+
+def test_a_hold_without_a_window_is_treated_as_lapsed(db, world_session):
+    """Fixtures carry no ``expires_at``; skipping them would pin a slot forever."""
+    session, world, requester = world_session
+    result = call(
+        session,
+        requester,
+        "create_booking_proposal",
+        {
+            "slot_ids": [world.stable_slot(REPLACEMENT_DAY, ALTERNATE_TIME)],
+            "appointment_type": "cleaning",
+        },
+    )
+    held = result["proposal_id"]
+    assert active_holds(db, held) == 2
+
+    with open_session(db) as other:
+        find_by_public_id(other, held).expires_at = None
+        other.commit()
+
+    with open_session(db) as reading:
+        released = release_expired_holds(reading, requester.conversation.id)
+        reading.commit()
+
+    assert released == [held]
+    assert active_holds(db, held) == 0
+    assert find_by_public_id(session, held).status == "pending"
 
 
 def test_an_unexpired_hold_is_left_alone(db, world_session):

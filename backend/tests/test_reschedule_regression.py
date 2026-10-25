@@ -36,6 +36,7 @@ from app.models import (
     Appointment,
     AppointmentStatus,
     BookingGroup,
+    ProposalStatus,
     SlotClaim,
     SlotStatus,
     utcnow,
@@ -749,8 +750,14 @@ def test_failure_after_the_release_rolls_everything_back(db, world_session, monk
 def test_an_expired_move_never_touches_the_original(db, world_session):
     session, world, requester = world_session
     held = move(session, requester, world)
+    # Retire the proposal outright (declined, or replaced by a newer choice).
+    # A hold merely lapsing is different: it frees the interval but leaves the
+    # card confirmable, so the patient cannot lose a time they chose.
     with open_session(db) as fresh:
-        expire_proposal(fresh, find_by_public_id(fresh, held["proposal_id"]), utcnow())
+        stale = find_by_public_id(fresh, held["proposal_id"])
+        expire_proposal(fresh, stale, utcnow())
+        stale.status = ProposalStatus.EXPIRED.value
+        stale.resolved_at = utcnow()
         fresh.commit()
 
     result = confirm_change(session, requester, held["proposal_id"])

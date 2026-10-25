@@ -84,10 +84,10 @@ logger = logging.getLogger(__name__)
 # How long a patient's hold blocks the slot for everyone else. This is the clock
 # the patient sees ("Held until 5:13 AM") and the one that must be short: a
 # clicked time that nobody confirms is usually a patient who changed their mind,
-# and 30 minutes of a dentist's day is a long time to reserve for a click that
+# and half an hour of a dentist's day is a long time to reserve for a click that
 # was reconsidered 20 seconds later. Unclicking releases it immediately (see
-# ``release_holds`` and ``expire_proposal``); the window only bounds a patient
-# who walks away from the tab.
+# ``release_hold_on_change`` and ``expire_proposal``); the window only bounds a
+# patient who walks away from the tab.
 HOLD_MINUTES = 2
 
 
@@ -253,7 +253,11 @@ def release_expired_holds(session: Session, conversation_id: int) -> list[str]:
     released: list[str] = []
     now = utcnow()
     for proposal in pending_for_conversation(session, identifier):
-        if not proposal.expires_at or proposal.expires_at > now:
+        # A missing ``expires_at`` counts as lapsed: fixtures and any row written
+        # before ``create_proposal`` set the column carry no window, and skipping
+        # them would leave their holds on the calendar forever. Only a window
+        # still in the future keeps a hold alive.
+        if proposal.expires_at is not None and proposal.expires_at > now:
             continue
         if expire_proposal(session, proposal, now):
             audit.record(
@@ -745,37 +749,6 @@ def _already_resolved(proposal: BookingProposal) -> Outcome:
         proposal_id=proposal.public_id,
         message=f"This proposal {label}. I can find current times for you.",
     )
-
-
-def _reopen_lapsed_hold(session: Session, proposal: BookingProposal, now: datetime) -> bool:
-    """Allow a confirmation whose *hold* lapsed, so the clicked time can still be taken.
-
-    The hold window is deliberately short (``HOLD_MINUTES``): a click reserves a
-    dentist's interval for a couple of minutes, not half an hour, so a patient
-    who changes their mind (or walks away) does not block the calendar. Lapsing
-    therefore must not throw the choice away. Nothing was booked and nothing was
-    declined -- the patient simply clicked and took a moment longer than the
-    window -- so confirmation is allowed to proceed, and the ordinary
-    revalidation inside the transaction decides:
-
-    * the interval is still open -> it is booked, exactly as if the hold had
-      still been live;
-    * somebody else took it in the meantime -> the usual ``slot_taken`` result,
-      with nothing booked and the original visit untouched.
-
-    Only cancellation, supersession and a confirmed booking are irreversible.
-    A lapsed hold is *not* an expiry: ``expire_proposal`` is for retiring a
-    proposal outright (a demo reset), and its row stays expired.
-    """
-    if proposal.status != ProposalStatus.EXPIRED.value:
-        return False
-    if proposal.confirmed_at is not None or proposal.booking_group_id is not None:
-        return False
-    proposal.status = ProposalStatus.PENDING.value
-    proposal.resolved_at = None
-    proposal.expires_at = now + timedelta(minutes=HOLD_MINUTES)
-    session.flush()
-    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -1840,7 +1813,6 @@ __all__ = [
     "DraftItem",
     "HOLD_MINUTES",
     "Outcome",
-    "PROPOSAL_TTL_MINUTES",
     "confirm_proposal",
     "create_proposal",
     "expire_proposal",

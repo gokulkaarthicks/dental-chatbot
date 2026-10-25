@@ -118,7 +118,7 @@ The receptionist collects a name, US phone number, date of birth, and insurance 
 
 The agent identifies appointment type, date window, provider preference, and time preference. Availability filters business hours, provider eligibility, duration, existing appointments, staff blocks, and active claims. Natural-language dates use `America/Los_Angeles`; ambiguous and impossible dates are surfaced.
 
-The UI displays slots as cards. A click creates a pending proposal and a 30-minute hold. The patient must confirm. Confirmation rechecks the slots and writes the appointment only after the recheck succeeds.
+The UI displays slots as cards. A click creates a pending proposal and holds the time for 2 minutes. The patient must confirm. Asking for other times ("Change") releases the hold immediately rather than at the end of the window. Confirmation rechecks the slots and writes the appointment only after the recheck succeeds.
 
 ### Existing patients
 
@@ -140,7 +140,7 @@ Insurance, self-pay, payment, hours, location, and contact answers come from con
 
 Availability is represented as 30-minute provider slots. Appointment types consume contiguous slots. `SlotClaim` joins an appointment or proposal to each interval, and a database uniqueness constraint permits only one active claim per slot. Service checks provide useful messages; the database constraint is the load-bearing overlap protection.
 
-Proposal creation runs under `BEGIN IMMEDIATE`, revalidates intervals, and records active holds. Holds expire after 30 minutes. Confirmation uses another `BEGIN IMMEDIATE`, revalidates all intervals, releases holds, creates the appointment or appointments, and marks the proposal accepted. A failure rolls back the transaction.
+Proposal creation runs under `BEGIN IMMEDIATE`, revalidates intervals, and records active holds. Holds last 2 minutes (`HOLD_MINUTES`) and are released earlier whenever the patient changes their mind: a new search, or a "Change" click, hands the time back in the same turn. A hold window passing frees the interval but not the choice — the card stays confirmable, and confirmation revalidates the interval before booking it. Confirmation uses another `BEGIN IMMEDIATE`, revalidates all intervals, releases holds, creates the appointment or appointments, and marks the proposal accepted. A failure rolls back the transaction.
 
 Client create keys and confirmation keys provide idempotent retries. Replaying an accepted confirmation returns the committed result rather than creating another booking. Stale cards and expired proposals are rejected and removed from the actionable UI. A conflict cannot produce a success response.
 

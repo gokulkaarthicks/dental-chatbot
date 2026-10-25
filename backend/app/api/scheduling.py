@@ -21,10 +21,10 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import CurrentPatientSession, DbSession
-from app.models import Conversation, utcnow
+from app.models import Conversation
 from app.services import conversations, patient_sessions, scheduling, staff_handoff
 from app.services.availability_engine import resolve_appointment_type
-from app.services.proposals import find_by_public_id, pending_for_conversation
+from app.services.proposals import find_by_public_id
 from app.services.scheduling import Requester
 
 logger = logging.getLogger(__name__)
@@ -538,8 +538,9 @@ def expire_pending(
 ) -> SchedulingActionResponse:
     """Housekeeping used by the UI refresh path.
 
-    Holds last 30 minutes; a proposal past its window should stop blocking slots
-    even if nobody clicked anything.
+    Holds last ``HOLD_MINUTES``; a proposal past its window should stop blocking
+    slots even if nobody clicked anything. Its card stays confirmable, and the
+    time is still checked (and booked, if free) on confirmation.
     """
     conversation = _conversation(db, record, conversation_id)
     expired = _expire_lapsed(db, conversation.id)

@@ -1,0 +1,81 @@
+# Development overlay: edit -> save -> see it, with no rebuild.
+#
+#   make dev          # docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# The base file bakes source into the images (``COPY app ./app``, ``npm run
+# build``), so a change only reaches a container by rebuilding it. This overlay
+# replaces both commands with something that reads the working tree:
+#
+#   backend   uvicorn --reload over a bind-mounted ./backend
+#   frontend  the Vite dev server on :5173, proxying /api to the backend
+#
+# Only the *first* start builds — and only to install dependencies. After that,
+# Python and TSX edits are picked up on save.
+#
+# The base topology is kept deliberately: images, bind mount of the data volume,
+# and the backend's healthcheck all stay identical, so a bug reproduces the same
+# way here and under ``make up``. What changes is where the code comes from.
+#
+# Rebuild when: ``backend/requirements.txt`` or ``frontend/package.json`` change.
+# Never needed for: ``backend/app/**``, ``frontend/src/**``, ``frontend/nginx.conf``.
+
+services:
+  backend:
+    # Override the baked image's files with the working tree, read-only: the
+    # container has no reason to write to source, and a typo in a path should
+    # fail loudly instead of creating a file nobody reviews.
+    volumes:
+      - clinic-data:/app/data
+      - ./backend/app:/app/app:ro
+      - ./backend/tests:/app/tests:ro
+      - ./backend/server.py:/app/server.py:ro
+      - ./backend/pyproject.toml:/app/pyproject.toml:ro
+    # ``--reload`` must watch the *mounted* path, not the image's copy: the
+    # in-image files are replaced by the bind mount at runtime, so a reloader
+    # watching only /app still notices, but watching /app/app makes the intent
+    # explicit and costs nothing.
+    command:
+      - python
+      - -m
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/app
+      - --reload-dir
+      - /app/tests
+      # Test runs write __pycache__ into the mount; ignore the churn so a
+      # pytest invocation does not restart the API mid-chat.
+      - --reload-exclude
+      - "*.pyc"
+      - --reload-exclude
+      - "__pycache__/*"
+
+  frontend:
+    # The dev server, not nginx. The base image stays built and cached, so
+    # flipping back to ``make up`` afterwards costs one restart, not a build.
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      # ``npm run dev`` binds 0.0.0.0:5173 and proxies /api; the target has to be
+      # the compose service name because this runs inside the compose network.
+      VITE_API_PROXY_TARGET: http://backend:8000
+      # Container filesystems are slow at inotify-free polling and macOS bind
+      # mounts do not forward fs events reliably; polling costs a little CPU but
+      # makes hot reload actually work from the host.
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./frontend:/app
+      # Keep the container's own node_modules: the host copy is macOS-built and
+      # would break esbuild/rollup binaries inside Alpine.
+      - /app/node_modules
+    command: sh -c "npm install --no-audit --no-fund && npm run dev"
+    # Compose *appends* ports across files, so :8080 from the base file would
+    # still be published -- pointing at a dev server that listens on 5173, i.e.
+    # a port nothing answers on. One frontend address at a time: :5173 here.
+    ports: !override
+      - "5173:5173"

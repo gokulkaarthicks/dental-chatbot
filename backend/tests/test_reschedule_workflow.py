@@ -51,6 +51,7 @@ from app.models import (
     FamilyMember,
     Patient,
     PatientSession,
+    ProposalStatus,
     Provider,
     ProviderSpecialty,
     SlotClaim,
@@ -545,8 +546,14 @@ def test_expiring_a_reschedule_preserves_the_original(db, world_session):
         "proposal_id"
     ]
 
+    # Retire the proposal outright (as a decline or a supersede would). A hold
+    # simply lapsing is *not* this: it frees the interval but keeps the card
+    # confirmable, so the patient cannot lose a time they actually chose.
     with open_session(db) as fresh:
-        expire_proposal(fresh, find_by_public_id(fresh, proposal_id), utcnow())
+        stale = find_by_public_id(fresh, proposal_id)
+        expire_proposal(fresh, stale, utcnow())
+        stale.status = ProposalStatus.EXPIRED.value
+        stale.resolved_at = utcnow()
         fresh.commit()
 
     original = get(db, world.original.id)

@@ -1,20 +1,27 @@
 # Dental AI Receptionist — developer entry points.
 #
 # Primary commands:
+#   make dev          docker compose with hot reload (edit -> save -> see it)
 #   make seed         insert missing fixtures (never deletes records)
 #   make reset-demo   stop writers, recreate the demo DB, reseed, restart
 #   make up           docker compose up --build (also auto-inits + seeds an empty DB)
 #
 # Everything runs in containers so no host Python/Node install is required.
+#
+# ``make up`` builds a snapshot of the source into the images. A source edit
+# therefore needs another ``make up`` before the container sees it; ``make dev``
+# bind-mounts the working tree instead and removes that loop.
 
 SHELL := /bin/bash
 COMPOSE := docker compose
 COMPOSE_FILE := docker-compose.yml
+COMPOSE_DEV_FILE := docker-compose.dev.yml
+DEV_PORT := 5173
 BACKEND_SERVICE := backend
 FRONTEND_SERVICE := frontend
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps seed reset-demo shell-db demo-status backend-status api-docs \
+.PHONY: help up down dev logs ps seed reset-demo shell-db demo-status backend-status api-docs \
         frontend-logs backend-logs rebuild clean-volumes hooks check lint test
 
 help: ## Show available commands
@@ -27,6 +34,18 @@ help: ## Show available commands
 
 up: ## Build and start both services (seeds an empty database)
 	$(COMPOSE) -f $(COMPOSE_FILE) up --build
+
+# The dev overlay swaps both commands for reload/dev-server variants, so this
+# one builds once (deps) and then follows the working tree. Both stacks want
+# :8080/:8000, so the production containers are replaced rather than joined --
+# running them side by side would quietly serve stale code on the old ports and
+# make "my change didn't apply" the normal symptom.
+dev: ## Hot reload for Python + TSX, frontend on :5173 (replaces `up`)
+	@echo ">> Patient app : http://localhost:$(DEV_PORT)"
+	@echo ">> API docs    : http://localhost:8000/docs"
+	@echo ">> Backend edits restart uvicorn; TSX edits hot-reload the browser."
+	@echo ">> Rebuild only when requirements.txt or package.json change."
+	$(COMPOSE) -f $(COMPOSE_FILE) -f $(COMPOSE_DEV_FILE) up --build
 
 down: ## Stop both services (keeps the data volume)
 	$(COMPOSE) -f $(COMPOSE_FILE) down

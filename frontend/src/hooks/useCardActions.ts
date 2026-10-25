@@ -675,16 +675,24 @@ export function useCardActions({
 
   const holdFamilyOption = useCallback(
     async (card: FamilyOptionCard) => {
-      // Turns the chip into an ordinary chat request, so the family hold goes
-      // through the same assistant path (and the same SQLite writes) as typing
-      // it. Prose, not card contents: the hold is a new message, not a re-offer.
+      // Keep the clicked option's identity in the request. Names alone are not
+      // enough when two family cards contain the same people; without this the
+      // assistant has to ask "earlier or later?" and the click loses its meaning.
       const names = joinNames(
         card.slots.map((slot) => slot.patient_first_name).filter((name): name is string => Boolean(name)),
       );
+      const selectedTimes = card.slots
+        .map((slot) => `${slot.patient_first_name ?? "patient"} at ${slot.time ?? slot.time_range}`)
+        .join(", ");
       await send(
         names
-          ? `Please hold that family option for ${names}. The times in the card work.`
-          : "Please hold that family option. The times in the card work.",
+          ? `Please hold the clicked family option for ${names}. ` +
+            `The selected times are ${selectedTimes}. ` +
+            `The clicked card's option_identity is ${card.option_id}; pass that exact ` +
+            "option_identity to hold_family_option."
+          : `Please hold the clicked family option at ${selectedTimes}. ` +
+            `The clicked card's option_identity is ${card.option_id}; pass that exact ` +
+            "option_identity to hold_family_option.",
       );
     },
     [send],

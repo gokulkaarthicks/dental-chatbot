@@ -70,8 +70,8 @@ export function SlotCardView({
               : "This request is already booked, so these other times are no longer bookable. Ask for a new visit if you need another appointment."
             : anyLive
             ? moving
-              ? "Picking a time holds it for 30 minutes. Your current appointment stays booked until you confirm the move."
-              : "Picking a time holds it for 30 minutes. Nothing is booked until you confirm."
+              ? "Picking a time holds it for 2 minutes. Asking for other times gives it straight back. Your current appointment stays booked until you confirm the move."
+              : "Picking a time holds it for 2 minutes. Asking for other times gives it straight back, and nothing is booked until you confirm."
             : "These times have been superseded or taken. Ask for current availability and I'll check again."}
         </p>
       }

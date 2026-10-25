@@ -5,17 +5,45 @@ wanted something else. The next search answered with the same held card, so the
 only path forward was "Change", and a reader following along saw one set of
 times offered again and again with no way to accept them.
 
-Pins the rule the patient sees: their own decline is an answer. After it, a
-search finds current times; before it, a waiting hold is still shown back, so a
-search cannot silently replace a booking that is one click away.
+Pins the rule the patient sees: asking for other times is an answer. A search
+hands the held time back at once -- whether the patient pressed "Change" or
+simply asked again -- so the calendar is free and the grid shows real times.
+The card itself stays confirmable; ending the reservation is not a decline, and
+the time can still be confirmed if nobody took it.
 """
 
 from __future__ import annotations
 
-from conftest import SEARCH_PHRASE
+from datetime import timedelta
 
+from conftest import SEARCH_PHRASE
+from sqlalchemy import select
+
+from app.models import SlotClaim, utcnow
 from app.services import scheduling
+from app.services.proposals import find_by_public_id, release_expired_holds
 from app.services.scheduling import Requester
+
+
+def active_holds_for(session, public_id: str) -> int:
+    proposal = find_by_public_id(session, public_id)
+    return len(
+        list(
+            session.scalars(
+                select(SlotClaim).where(
+                    SlotClaim.held_by_proposal_id == proposal.id,
+                    SlotClaim.active.is_(True),
+                )
+            )
+        )
+    )
+
+
+def open_session():
+    """A second connection, as another request would use."""
+    from app import db as db_module
+
+    return db_module.new_session()
 
 
 def _search(session, requester: Requester, phrases: list[str]):
@@ -39,7 +67,14 @@ def _hold(session, requester: Requester, payload):
     )
 
 
-def test_a_waiting_hold_is_still_shown_back_before_the_patient_declines(scenario) -> None:
+def test_a_waiting_hold_is_released_when_the_patient_asks_for_other_times(scenario) -> None:
+    """A search after a hold is the patient moving off it, so it is handed back.
+
+    Previously the answer was the held card itself ("pending_booking_exists"),
+    which kept the time reserved for the whole window -- that is the bug: a
+    click that is reconsidered must not block the calendar. The card stays
+    confirmable; only its reservation ends.
+    """
     session, requester = scenario
     first = _search(session, requester, [SEARCH_PHRASE])
     held = _hold(session, requester, first)
@@ -47,10 +82,38 @@ def test_a_waiting_hold_is_still_shown_back_before_the_patient_declines(scenario
     assert held.get("proposal_id")
 
     again = _search(session, requester, [SEARCH_PHRASE])
-    # The hold is one click from booked: searching must not replace it.
-    assert again.payload["error"] == "pending_booking_exists"
-    assert again.options == []
-    assert again.payload["pending_proposal_id"] == held["proposal_id"]
+    assert again.payload.get("available") is True, again.payload
+    assert again.options, "the freed time must come back in the new grid"
+    assert not any(card.get("settled") for card in again.payload["cards"])
+
+    assert active_holds_for(session, held["proposal_id"]) == 0
+    assert scheduling._pending_booking(session, requester) is None
+
+
+def test_a_lapsed_hold_still_lets_the_patient_confirm_the_time(scenario) -> None:
+    """Releasing the reservation never throws the choice away."""
+    session, requester = scenario
+    first = _search(session, requester, [SEARCH_PHRASE])
+    held = _hold(session, requester, first)
+    session.commit()
+
+    with open_session() as other:
+        row = find_by_public_id(other, held["proposal_id"])
+        row.expires_at = utcnow() - timedelta(seconds=1)
+        other.commit()
+
+    with open_session() as reading:
+        assert release_expired_holds(reading, requester.conversation.id) == [
+            held["proposal_id"]
+        ]
+        reading.commit()
+
+    assert active_holds_for(session, held["proposal_id"]) == 0
+    result = scheduling.confirm(
+        session, requester=requester, proposal_id=held["proposal_id"]
+    )
+    assert result["ok"] is True, result
+    assert result["confirmed"] is True
 
 
 def test_after_a_decline_the_search_returns_current_times(scenario) -> None:
