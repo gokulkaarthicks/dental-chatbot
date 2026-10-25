@@ -65,10 +65,10 @@ def _messages_payload(db: DbSession, conversation: Conversation) -> list[ChatMes
     return [
         ChatMessageResponse(
             **{
+                **entry,
                 "cards": scheduling.settle_superseded_grids(
                     db, conversation.id, entry.get("cards")
                 ),
-                **entry,
             }
         )
         for entry in conversations.visible_messages(conversations.history(db, conversation))

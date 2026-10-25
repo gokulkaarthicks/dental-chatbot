@@ -216,6 +216,7 @@ def family_option_cards(
     plans: list[list[SlotOption]],
     appointment_types: dict[int, AppointmentType],
     start_index: int = 0,
+    settled: bool = False,
 ) -> list[dict[str, Any]]:
     """One card per complete family plan, carrying every member's own time.
 
@@ -237,10 +238,16 @@ def family_option_cards(
                 "option_index": start_index + offset,
                 "option_identity": identity,
                 "slots": [
-                    slot_card(option, appointment_types[option.patient_id or 0])
+                    slot_card(
+                        option,
+                        appointment_types[option.patient_id or 0],
+                        settled=settled,
+                    )
                     | {"intent": "new_booking"}
                     for option in plan
                 ],
+                "settled": settled,
+                "require_open": not settled,
                 "back_to_back": is_back_to_back,
                 "title": "Book everyone together",
                 "slot_count": len(plan),
@@ -1977,7 +1984,7 @@ def settle_superseded_grids(
     if not settled:
         return output
     for card in output:
-        if not isinstance(card, dict) or card.get("type") != "slot":
+        if not isinstance(card, dict) or card.get("type") not in {"slot", "family_option"}:
             continue
         # An extra visit the patient asked for stays bookable; the search marks
         # those itself, so only cards that were plain offers are retired here.
@@ -1990,6 +1997,17 @@ def settle_superseded_grids(
         card["require_open"] = False
         if reason is not None:
             card["settled_by"] = reason
+        if card.get("type") == "family_option":
+            card["slots"] = [
+                {
+                    **slot,
+                    "settled": True,
+                    "require_open": False,
+                    **({"settled_by": reason} if reason is not None else {}),
+                }
+                for slot in card.get("slots", [])
+                if isinstance(slot, dict)
+            ]
     return output
 
 
@@ -2302,10 +2320,25 @@ def hold_family_option(
         option_identity=option_identity,
     )
     if resolved is None:
+        # The clicked card is a historical search result. Re-search the same
+        # request before returning so the patient sees current complete plans,
+        # not the stale option that just failed its atomic re-check.
+        fresh_plans = search_nearby_family_plans(
+            session, members=requests, preferences=preferences, max_plans=6
+        )[:3]
+        if fresh_plans:
+            _FAMILY_PLAN_CACHE[_family_cache_key(requests)] = fresh_plans
         return _fail(
             "option_unavailable",
             "That family option is no longer available. I can search again.",
-            cards=[],
+            cards=family_option_cards(
+                plans=fresh_plans,
+                appointment_types=types,
+            ),
+            next_step=(
+                "The clicked option is stale. Offer only the returned fresh family options; "
+                "do not retry the old option."
+            ),
         )
 
     # A family option is one record for the party. This search's booking is

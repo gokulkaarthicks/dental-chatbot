@@ -558,7 +558,15 @@ def _sync_patient(
 
 
 def _visible(session: Session, conversation: Conversation) -> list[dict]:
-    return conversations.visible_messages(conversations.history(session, conversation))
+    return [
+        {
+            **entry,
+            "cards": scheduling.settle_superseded_grids(
+                session, conversation.id, entry.get("cards")
+            ),
+        }
+        for entry in conversations.visible_messages(conversations.history(session, conversation))
+    ]
 
 
 def greeting_reply(session: Session, patient_session: PatientSession) -> str:

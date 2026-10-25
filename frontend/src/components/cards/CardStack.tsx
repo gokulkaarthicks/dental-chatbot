@@ -74,7 +74,7 @@ export function CardStack({ cards, handlers }: { cards: ChatCard[]; handlers: Ca
                 key={key}
                 card={card}
                 onRequest={handlers.onHoldFamily}
-                disabled={handlers.disabled}
+                disabled={handlers.disabled || Boolean(card.settled)}
               />
             );
           case "handoff":

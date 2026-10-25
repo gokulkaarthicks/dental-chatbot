@@ -690,6 +690,7 @@ export function useCardActions({
 
   const holdFamilyOption = useCallback(
     async (card: FamilyOptionCard) => {
+      if (card.settled) return;
       // Keep the clicked option's identity in the request. Names alone are not
       // enough when two family cards contain the same people; without this the
       // assistant has to ask "earlier or later?" and the click loses its meaning.

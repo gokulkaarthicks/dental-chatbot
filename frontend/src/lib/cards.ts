@@ -91,6 +91,9 @@ export type FamilyOptionCard = {
   option_id: string;
   slots: SlotCard[];
   back_to_back: boolean;
+  /** This historical family search is no longer an offer after a hold/book. */
+  settled?: boolean;
+  require_open?: boolean;
 };
 
 export type ConfirmedAppointment = {

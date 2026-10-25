@@ -92,6 +92,10 @@ export function FamilyOptionCardView({
   onRequest: (card: FamilyOptionCard) => void;
   disabled: boolean;
 }) {
+  // A held or booked family request retires the entire search result. Do not
+  // leave its old options on screen as if they were still selectable.
+  if (card.settled) return null;
+
   return (
     <CardShell
       tone="slots"

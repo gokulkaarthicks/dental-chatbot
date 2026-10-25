@@ -100,3 +100,41 @@ def test_an_explicitly_requested_extra_visit_stays_bookable(scenario) -> None:
     # Adding a separate visit is a different request; its times stay clickable.
     assert out[0]["settled"] is False
     assert "settled_by" not in out[0]
+
+
+def test_a_held_proposal_retires_family_options_too(scenario) -> None:
+    session, requester = scenario
+    first = scheduling.find_availability(
+        session,
+        patient=requester.patient,
+        appointment_type_code="cleaning",
+        date_phrases=[SEARCH_PHRASE],
+        requester=requester,
+    )
+    assert first.options, first.payload
+    held = scheduling.propose_booking(
+        session,
+        requester=requester,
+        appointment_type=first.appointment_type,
+        options=first.options[:1],
+        from_ui=True,
+    )
+    session.commit()
+    assert held.get("proposal_id"), held
+
+    family = [
+        {
+            "type": "family_option",
+            "option_id": "family:old",
+            "settled": False,
+            "require_open": True,
+            "slots": _grid(["a", "b"]),
+        }
+    ]
+    out = scheduling.settle_superseded_grids(
+        session, requester.conversation.id, family
+    )
+
+    assert out[0]["settled"] is True
+    assert out[0]["require_open"] is False
+    assert all(slot["settled"] is True for slot in out[0]["slots"])

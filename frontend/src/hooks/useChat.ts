@@ -49,6 +49,13 @@ function storedKey(message: ChatMessage, index: number): string {
 
 function restoredToUI(messages: ChatMessage[]): UIMessage[] {
   const seenProposalIds = new Set<string>();
+  const seenFamilyOptionIds = new Set<string>();
+  let latestFamilyOptionMessage = -1;
+  messages.forEach((message, index) => {
+    if (message.cards?.some((card) => card.type === "family_option")) {
+      latestFamilyOptionMessage = index;
+    }
+  });
   // Walk newest to oldest so a confirmation wins over an older proposal card,
   // and a retried/replayed card cannot render the same proposal twice.
   return messages
@@ -62,6 +69,17 @@ function restoredToUI(messages: ChatMessage[]): UIMessage[] {
         .slice()
         .reverse()
         .filter((card) => {
+          // Family options are a live search result, not a permanent list of
+          // alternatives. Keep only the newest result set; older searches are
+          // historical and otherwise remain clickable after availability has
+          // changed.
+          if (card.type === "family_option") {
+            if (index !== latestFamilyOptionMessage || seenFamilyOptionIds.has(card.option_id)) {
+              return false;
+            }
+            seenFamilyOptionIds.add(card.option_id);
+            return true;
+          }
           if (!("proposal_id" in card)) return true;
           if (seenProposalIds.has(card.proposal_id)) return false;
           seenProposalIds.add(card.proposal_id);
