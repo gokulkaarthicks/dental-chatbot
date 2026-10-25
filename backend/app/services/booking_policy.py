@@ -516,9 +516,9 @@ def keeps_family_shape(
 ) -> bool:
     """Whether an answer still matches how many times this request needs.
 
-    The rule the patient sees: for two people, a valid answer is a set of
-    back-to-back visits for both (a family option), not a list of single times
-    that could only ever book one of them.
+    The rule the patient sees: for two people, a valid answer is a complete
+    same-day family option with one open visit for each person, not a list of
+    single times that could only ever book one of them.
     """
     if scope.pending:
         return True

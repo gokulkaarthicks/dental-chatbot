@@ -43,7 +43,7 @@ from app.services.availability_engine import (
     is_interval_bookable,
     resolve_appointment_type,
     search_availability,
-    search_back_to_back_plans,
+    search_nearby_family_plans,
 )
 from app.services.proposals import (
     DraftItem,
@@ -217,7 +217,7 @@ def family_option_cards(
     appointment_types: dict[int, AppointmentType],
     start_index: int = 0,
 ) -> list[dict[str, Any]]:
-    """One card per continuous block, carrying every member's own time.
+    """One card per complete family plan, carrying every member's own time.
 
     ``option_id`` and ``option_identity`` both survive a page reload: the click
     posts them back, and the server re-derives the same option from SQLite.
@@ -225,6 +225,11 @@ def family_option_cards(
     cards: list[dict[str, Any]] = []
     for offset, plan in enumerate(plans):
         identity = family_plan_identity(plan)
+        ordered = sorted(plan, key=lambda option: option.starts_at)
+        is_back_to_back = all(
+            previous.ends_at == current.starts_at
+            for previous, current in zip(ordered, ordered[1:], strict=True)
+        )
         cards.append(
             {
                 "type": "family_option",
@@ -236,13 +241,13 @@ def family_option_cards(
                     | {"intent": "new_booking"}
                     for option in plan
                 ],
-                "back_to_back": True,
+                "back_to_back": is_back_to_back,
                 "title": "Book everyone together",
                 "slot_count": len(plan),
                 "starts_at": (
-                    plan[0].starts_at.isoformat(timespec="minutes") if plan else None
+                    ordered[0].starts_at.isoformat(timespec="minutes") if ordered else None
                 ),
-                "ends_at": plan[-1].ends_at.isoformat(timespec="minutes") if plan else None,
+                "ends_at": ordered[-1].ends_at.isoformat(timespec="minutes") if ordered else None,
             }
         )
     return cards
@@ -269,9 +274,9 @@ def find_availability(
     """Search real availability under the patient's stated constraints.
 
     ``group_first_name`` is set when the patient asked for a household booking
-    and named a second person. Then the answer is a set of continuous blocks for
-    both people rather than a list of single times, because one time can never
-    satisfy a two-person request.
+    and named a second person. Then the answer is a set of complete nearby plans
+    for both people rather than a list of single times, because one time can
+    never satisfy a two-person request.
     """
     empty_type = AppointmentType(id=0, code="", name="", duration_minutes=30)
     appointment_type, problem = _type_or_error(session, appointment_type_code, default="checkup")
@@ -523,14 +528,14 @@ def _group_answer(
     base: dict[str, Any],
     scope: booking_policy.BookingScope,
 ) -> AvailabilityAnswer:
-    """Continuous blocks for a household, shaped as family options.
+    """Complete nearby same-day plans for a household, shaped as family options.
 
-    Every option is a real run of the schedule for each person, back-to-back, so
-    one card covers exactly the visits the request needs. There is no list of
-    single times here: a single time could only ever book one of the people.
+    Every option is a real open run of the schedule for each person, so one card
+    covers exactly the visits the request needs. There is no list of single times
+    here: a single time could only ever book one of the people.
     """
     appointment_types = {member.patient_id: member.appointment_type for member in members}
-    plans = search_back_to_back_plans(
+    plans = search_nearby_family_plans(
         session, members=members, preferences=preferences, max_plans=6
     )
     people = [member.patient_first_name for member in members]
@@ -540,7 +545,7 @@ def _group_answer(
         people=people,
         desired_slot_count=len(members),
         covered_people=len(scope.covered_patient_ids),
-        back_to_back=True,
+        back_to_back=False,
     )
     if not plans:
         return AvailabilityAnswer(
@@ -548,9 +553,8 @@ def _group_answer(
                 **base,
                 available=False,
                 message=(
-                    "I couldn't find a continuous block for both of you on those days, and "
-                    "I'd rather not book one of you without the other. I can check other days, "
-                    "or tell me if you'd like separate visits on the same day."
+                    "I couldn't find currently open times for everyone on those days. I can "
+                    "check other days, or tell me if you'd like separate visits."
                 ),
             ),
             [],
@@ -568,8 +572,9 @@ def _group_answer(
             slots_per_option=len(members),
             days=[day.isoformat() for day in days],
             message=(
-                f"{len(plans)} back-to-back option(s) for "
-                f"{' and '.join(people)}. One confirmation books everyone."
+                f"{len(plans)} complete family option(s) for "
+                f"{' and '.join(people)}, ordered by closest appointment times. "
+                "One confirmation books everyone."
             ),
             cards=family_option_cards(plans=plans, appointment_types=appointment_types),
         ),
@@ -1548,7 +1553,7 @@ def confirm(
             if family_conflict:
                 # The family request is one atomic booking. Retire the stale
                 # hold before searching so the next cards represent one fresh
-                # contiguous run for everyone, never a partial booking.
+                # complete plan for everyone, never a partial booking.
                 supersede_pending(
                     session,
                     conversation_id=requester.conversation_id,
@@ -1561,7 +1566,7 @@ def confirm(
             if fresh_family_cards:
                 payload["message"] = (
                     "Those times changed before confirmation, so nothing was booked. "
-                    "I released that hold and found fresh back-to-back options for everyone."
+                    "I released that hold and found fresh nearby options for everyone."
                 )
                 payload["next_step"] = "Offer the fresh family options; do not retry the old card."
                 payload["proposal_stale"] = True
@@ -1569,7 +1574,7 @@ def confirm(
             elif family_conflict:
                 payload["message"] = (
                     "Those times changed before confirmation, so nothing was booked. "
-                    "I couldn't find another complete back-to-back run on that day."
+                    "I couldn't find another complete nearby plan on that day."
                 )
                 payload["next_step"] = "Ask whether the patient wants another day or separate visits."
                 payload["proposal_stale"] = True
@@ -2090,12 +2095,12 @@ def family_search(
     range_days: int | None = None,
     back_to_back: bool = True,
 ) -> dict[str, Any]:
-    """Find continuous blocks where a household can be seen one after another.
+    """Find complete same-day family plans with nearby appointment times.
 
     Read-only. Each card carries one time per person, so the number of times on
     a card is exactly how many visits one confirmation would book.
     """
-    del back_to_back  # the only shape offered is continuous: one block per option
+    del back_to_back  # retained for tool compatibility; gaps are now allowed
     requests, types, problem = _family_requests(session, requester, members)
     if problem is not None or requests is None or types is None:
         return problem or _fail("invalid_family", "I couldn't put that family together.")
@@ -2111,7 +2116,7 @@ def family_search(
     if preferences.past_rejected and not preferences.days:
         return _ok(message="That date has already passed. Which upcoming day works?")
 
-    plans = search_back_to_back_plans(
+    plans = search_nearby_family_plans(
         session, members=requests, preferences=preferences, max_plans=6
     )
     if not plans:
@@ -2119,7 +2124,7 @@ def family_search(
             available=False,
             people=[member.patient_first_name for member in requests],
             message=(
-                "I couldn't find a continuous block for everyone on those days. I can check "
+                "I couldn't find currently open times for everyone on those days. I can check "
                 "other days, or book you separately if you'd rather."
             ),
         )
@@ -2131,8 +2136,9 @@ def family_search(
         slots_per_option=len(requests),
         people=[member.patient_first_name for member in requests],
         message=(
-            "Here are options where everyone can be seen back-to-back. Confirming holds the "
-            "whole group; it's booked only after you confirm."
+            "Here are complete options with everyone's currently open times, ordered as close "
+            "together as possible. Confirming holds the whole group; it's booked only after you "
+            "confirm."
         ),
         cards=family_option_cards(plans=plans, appointment_types=types),
     )
@@ -2384,7 +2390,7 @@ def hold_family_option(
         proposal_ids=[proposal.public_id],
         slot_count=len(proposal.items),
         message=(
-            "I've held back-to-back times for the whole family. Confirming books everyone "
+            "I've held nearby times for the whole family. Confirming books everyone "
             "together. If any time is taken, nothing is booked."
         ),
         next_step=(
@@ -2423,7 +2429,7 @@ def _family_plan_for_card(
     if plan is None:
         # The cache is gone (a restart, or a chattier turn): recompute and match
         # the card's start times so the click still means the option it showed.
-        recomputed = search_back_to_back_plans(
+        recomputed = search_nearby_family_plans(
             session, members=requests, preferences=preferences, max_plans=6
         )
         if option_identity:

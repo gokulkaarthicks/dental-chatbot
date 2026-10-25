@@ -22,6 +22,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -552,37 +553,215 @@ def search_family_availability(
     back_to_back: bool = True,
     now: datetime | None = None,
 ) -> list[list[SlotOption]]:
-    """Combined proposals for a family: one run per member, aligned in time.
+    """Combined proposals for a family, ordered by how close the visits are.
 
-    ``back_to_back`` chains each member directly after the previous one, so a
-    parent and child can be seen in a continuous block; otherwise each member
-    gets the earliest free run and overlaps are avoided only for the same
-    provider.
+    ``back_to_back`` is retained for tool compatibility, but family searches
+    now allow short gaps between visits. Every returned plan still contains one
+    currently open slot for every member on the same day, and plans are ranked
+    by the total waiting time between visits.
+    """
+    del back_to_back
+    return search_nearby_family_plans(
+        session,
+        members=members,
+        preferences=preferences,
+        max_plans=3,
+        now=now,
+    )
 
-    A family plan is emitted only when *every* member has a slot on the same
-    day. Partial plans are not returned, because confirming them atomically is
-    the point of a family booking.
+
+MAX_FAMILY_CANDIDATES_PER_MEMBER = 32
+
+
+def _family_candidates_for_day(
+    session: Session,
+    *,
+    members: list[FamilyMemberRequest],
+    day: date,
+    providers: list[Provider],
+    preferences: ResolvedPreferences,
+    now: datetime,
+) -> list[list[SlotOption]]:
+    """Return only live, bookable candidate runs for each member on ``day``."""
+    candidates_by_member: list[list[SlotOption]] = []
+    day_end = datetime.combine(day + timedelta(days=1), datetime.min.time())
+
+    for member in members:
+        eligible = [
+            provider
+            for provider in providers
+            if provider_rules.provider_eligible(provider, member.appointment_type)
+        ]
+        if member.provider_name:
+            eligible = match_provider_by_name(eligible, member.provider_name)
+        if not eligible:
+            return []
+
+        candidates: list[SlotOption] = []
+        seen: set[tuple[int, datetime]] = set()
+        for provider in eligible:
+            runs = _provider_free_runs(
+                session,
+                provider_id=provider.id,
+                day=day,
+                after=datetime.combine(day, datetime.min.time()),
+                before=day_end,
+                duration_minutes=member.appointment_type.duration_minutes,
+                now=now,
+            )
+            for start, end in runs:
+                key = (provider.id, start)
+                if key in seen or not preferences.accepts_time(start):
+                    continue
+                if _patient_conflict(session, [member.patient_id], start, end):
+                    continue
+                slot_ids = [
+                    row.id
+                    for row in session.scalars(
+                        select(AvailabilitySlot)
+                        .where(
+                            AvailabilitySlot.provider_id == provider.id,
+                            AvailabilitySlot.starts_at >= start,
+                            AvailabilitySlot.starts_at < end,
+                        )
+                        .order_by(AvailabilitySlot.starts_at)
+                    )
+                ]
+                if len(slot_ids) != slots_required(member.appointment_type.duration_minutes):
+                    continue
+                seen.add(key)
+                candidates.append(
+                    SlotOption(
+                        slot_ids=slot_ids,
+                        stable_id=stable_slot_id(provider.id, start),
+                        provider_id=provider.id,
+                        provider_name=provider.full_name,
+                        provider_credentials=provider.credentials,
+                        provider_specialties=provider.specialty_names,
+                        appointment_type_code=member.appointment_type.code,
+                        appointment_type_name=member.appointment_type.name,
+                        starts_at=start,
+                        ends_at=end,
+                        duration_minutes=member.appointment_type.duration_minutes,
+                        patient_id=member.patient_id,
+                        patient_first_name=member.patient_first_name,
+                    )
+                )
+
+        candidates.sort(key=lambda option: (option.starts_at, option.provider_id))
+        candidates_by_member.append(candidates[:MAX_FAMILY_CANDIDATES_PER_MEMBER])
+
+    return candidates_by_member
+
+
+def _family_plan_is_non_overlapping(plan: list[SlotOption]) -> bool:
+    ordered = sorted(plan, key=lambda option: option.starts_at)
+    return all(
+        previous.ends_at <= current.starts_at
+        for previous, current in zip(ordered, ordered[1:], strict=True)
+    )
+
+
+def _nearby_family_plan_score(plan: list[SlotOption]) -> tuple[Any, ...]:
+    """Prefer the smallest total gap, then the smallest individual gap."""
+    ordered = sorted(plan, key=lambda option: option.starts_at)
+    gaps = [
+        max(0, int((current.starts_at - previous.ends_at).total_seconds()))
+        for previous, current in zip(ordered, ordered[1:], strict=True)
+    ]
+    return (
+        sum(gaps),
+        max(gaps, default=0),
+        ordered[0].starts_at,
+        tuple(option.starts_at for option in plan),
+        tuple(option.provider_id for option in plan),
+    )
+
+
+def _nearby_plans_for_day(
+    session: Session,
+    *,
+    members: list[FamilyMemberRequest],
+    day: date,
+    providers: list[Provider],
+    preferences: ResolvedPreferences,
+    now: datetime,
+    limit: int,
+) -> list[list[SlotOption]]:
+    candidates_by_member = _family_candidates_for_day(
+        session,
+        members=members,
+        day=day,
+        providers=providers,
+        preferences=preferences,
+        now=now,
+    )
+    if not candidates_by_member or any(not candidates for candidates in candidates_by_member):
+        return []
+
+    complete_plans: list[list[SlotOption]] = []
+
+    def collect(index: int, chosen: list[SlotOption]) -> None:
+        if index == len(candidates_by_member):
+            if _family_plan_is_non_overlapping(chosen):
+                complete_plans.append(list(chosen))
+            return
+        for option in candidates_by_member[index]:
+            if any(
+                option.starts_at < existing.ends_at
+                and existing.starts_at < option.ends_at
+                for existing in chosen
+            ):
+                continue
+            collect(index + 1, [*chosen, option])
+
+    collect(0, [])
+    complete_plans.sort(key=_nearby_family_plan_score)
+    return complete_plans[:limit]
+
+
+def search_nearby_family_plans(
+    session: Session,
+    *,
+    members: list[FamilyMemberRequest],
+    preferences: ResolvedPreferences,
+    max_plans: int = 6,
+    max_days: int = 14,
+    now: datetime | None = None,
+) -> list[list[SlotOption]]:
+    """Find complete same-day family plans, closest appointments first.
+
+    A plan may have gaps, but appointments never overlap. Partial family plans
+    are deliberately excluded so the confirmation remains atomic.
     """
     current = now or clinic_now()
     if not members:
         return []
 
-    active_providers = load_providers(session)
-    first_day, last_day = preferences.scan_bounds
+    providers = load_providers(session)
+    scan_from = max(preferences.today, current.date())
+    last_day = min(
+        preferences.scan_bounds[1],
+        scan_from + timedelta(days=max(1, max_days) - 1),
+    )
     plans: list[list[SlotOption]] = []
-    day = max(first_day, preferences.today)
-    while day <= last_day and len(plans) < 3:
+    seen: set[tuple[str, ...]] = set()
+    day = scan_from
+    while day <= last_day and len(plans) < max_plans:
         if preferences.accepts_day(day) and is_open_weekday(day):
-            plan = _plan_day(
+            for plan in _nearby_plans_for_day(
                 session,
                 members=members,
                 day=day,
-                providers=active_providers,
+                providers=providers,
                 preferences=preferences,
-                back_to_back=back_to_back,
                 now=current,
-            )
-            if plan:
+                limit=max_plans - len(plans),
+            ):
+                signature = tuple(option.stable_id for option in plan)
+                if signature in seen:
+                    continue
+                seen.add(signature)
                 plans.append(plan)
         day += timedelta(days=1)
     return plans
@@ -858,6 +1037,7 @@ __all__ = [
     "search_availability",
     "search_back_to_back_plans",
     "search_family_availability",
+    "search_nearby_family_plans",
     "slots_required",
     "stable_slot_id",
 ]

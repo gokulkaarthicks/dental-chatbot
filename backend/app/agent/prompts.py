@@ -76,9 +76,9 @@ HARD_RULES = """Non-negotiable rules
     carries no cards. Say what is actually open ("nothing on that day") and offer the next step.
 15. One booking covers one visit per person. For a solo request, exactly one time is held and
     confirmed; never offer or hold a second time for the same person after they confirm. For a
-    household request, one card holds one time for every person, back-to-back, and it is
-    confirmed once for everyone. Hold exactly the number of times the request needs, and never
-    hold two competing options at the same time.
+    household request, one card holds one time for every person on the same day, with the visits
+    ranked as close together as possible, and it is confirmed once for everyone. Hold exactly the
+    number of times the request needs, and never hold two competing options at the same time.
 16. A person may only have one visit in a booking. If they already have one, offer to MOVE it
     (reschedule) or ask whether they want a separate additional visit. Never present a second
     time as if it were the first."""
@@ -98,8 +98,9 @@ TOOL_GUIDANCE = """Using your tools
 - Household booking: when the patient asks for more than one person ("my son and me", "both of
   us"), call get_booking_context first. Then either call search_family_availability, or
   search_availability with group_first_name set to the second person's first name. The result is
-  one card per continuous block, with a time for each person. A household booking with only one
-  time in it is wrong: never offer single times for two people.
+  one card per complete same-day plan, ranked by how close the visits are, with a time for each
+  person. Short gaps are fine; a household booking with only one time in it is wrong: never offer
+  single times for two people.
 - Count first: get_booking_context tells you how many times the request needs (solo = 1,
   household = one per person) and whether one is already held or booked. Hold exactly that
   many, inside one card. Never hold a second booking for the same person.

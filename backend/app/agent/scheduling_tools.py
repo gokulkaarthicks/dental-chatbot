@@ -94,9 +94,9 @@ class SearchAvailabilityArgs(ToolArguments):
         default=None,
         description=(
             "Set ONLY when the patient asked for a household booking and named a child on the "
-            "account ('my son Leo and me'). The result is then one card per continuous block, "
-            "with a time for each person, because one time cannot book two people. Leave it "
-            "empty for a solo booking."
+            "account ('my son Leo and me'). The result is then one card per complete same-day "
+            "plan, ranked by how close the visits are, with a time for each person, because one "
+            "time cannot book two people. Leave it empty for a solo booking."
         ),
     )
     additional_visit: bool = Field(
@@ -256,7 +256,10 @@ class FamilyAvailabilityArgs(ToolArguments):
     start_date: str | None = None
     time_windows: list[str] = Field(default_factory=list)
     range_days: int | None = Field(default=None, ge=1, le=120)
-    back_to_back: bool = Field(default=True)
+    back_to_back: bool = Field(
+        default=False,
+        description="Legacy compatibility flag; family options may include short gaps.",
+    )
 
 
 class FamilyOptionArgs(ToolArguments):
@@ -273,7 +276,7 @@ class FamilyOptionArgs(ToolArguments):
     start_date: str | None = None
     time_windows: list[str] = Field(default_factory=list)
     range_days: int | None = Field(default=None, ge=1, le=120)
-    back_to_back: bool = True
+    back_to_back: bool = False
     summary: str | None = None
 
 
@@ -1387,8 +1390,9 @@ SCHEDULING_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="search_family_availability",
         description=(
-            "Find back-to-back times for several household members (self plus children). Each "
-            "option is one continuous block with a time for every person, so one confirmation "
+            "Find currently available times for several household members (self plus children), "
+            "with all visits on the same day and ranked as close together as possible. Short "
+            "gaps are allowed; each option has a time for every person, so one confirmation "
             "books everyone. Different visit types and durations are supported."
         ),
         args_model=FamilyAvailabilityArgs,
