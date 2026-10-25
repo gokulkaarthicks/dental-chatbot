@@ -1,0 +1,1 @@
+DeepSeek chat-completions API consumed directly via `httpx` (no OpenAI SDK); Pydantic v2 for tool argument validation; SQLAlchemy ORM sessions passed through `ToolContext`; DSML (DeepSeek Markup Language) parsed with regexes as a fallback when the provider emits tool calls in message content rather than the standard `tool_calls` array.

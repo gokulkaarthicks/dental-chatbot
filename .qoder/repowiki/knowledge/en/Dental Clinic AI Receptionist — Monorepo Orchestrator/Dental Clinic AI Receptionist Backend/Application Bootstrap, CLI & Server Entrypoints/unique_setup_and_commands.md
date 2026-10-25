@@ -1,0 +1,1 @@
+Run via `python -m app.cli init|seed|reset-demo|demo-status` or `make seed` / `make reset-demo`; production starts with `python -m server.py` (Uvicorn on PORT env var, default 8000). Database file defaults to `backend/data/clinic.db` inside a Docker volume.

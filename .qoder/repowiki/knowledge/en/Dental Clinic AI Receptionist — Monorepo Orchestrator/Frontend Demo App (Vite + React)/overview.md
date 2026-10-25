@@ -1,0 +1,1 @@
+Single Vite-built React application that wires the patient chat flow, staff dashboard, shared components, and runtime hooks into one deployable frontend served by nginx.

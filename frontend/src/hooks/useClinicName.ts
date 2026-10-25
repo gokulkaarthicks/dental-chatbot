@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { api, type ClinicResponse } from "../api/client";
 import { cachedClinicName, loadClinicName, onClinicName } from "../lib/clinic";
 
 /**
@@ -29,4 +30,25 @@ export function useClinicName(): string {
   }, []);
 
   return name;
+}
+
+/**
+ * Full clinic configuration (hours, address, phone, insurance).
+ *
+ * The sidebar is chrome, not data the conversation depends on: a failed request
+ * leaves it with the name only rather than blocking the chat.
+ */
+export function useClinicInfo(): ClinicResponse | null {
+  const [clinic, setClinic] = useState<ClinicResponse | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void api
+      .clinic(controller.signal)
+      .then((payload) => setClinic(payload))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+
+  return clinic;
 }

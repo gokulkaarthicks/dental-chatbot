@@ -1,0 +1,1 @@
+FastAPI application factory, SQLite bootstrap/migrations/seed pipeline, CLI entrypoint, settings loader, and Uvicorn server launcher for the Dental AI Receptionist backend.

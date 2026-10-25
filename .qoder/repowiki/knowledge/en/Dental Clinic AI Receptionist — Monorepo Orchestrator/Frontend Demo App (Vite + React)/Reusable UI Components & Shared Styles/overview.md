@@ -1,0 +1,1 @@
+Shared React primitives, card views, and chat UI building blocks plus the global CSS design tokens used across the frontend demo.

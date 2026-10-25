@@ -1,4 +1,4 @@
-# Dental AI Receptionist — developer entry points.
+# Dental AI Receptionist: developer entry points.
 #
 # Primary commands:
 #   make dev          docker compose with hot reload (edit -> save -> see it)

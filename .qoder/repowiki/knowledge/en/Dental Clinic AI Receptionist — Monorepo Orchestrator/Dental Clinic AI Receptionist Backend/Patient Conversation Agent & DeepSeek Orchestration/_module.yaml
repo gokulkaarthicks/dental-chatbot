@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: backend/agent_orchestration
+title: Patient Conversation Agent & DeepSeek Orchestration
+scope:
+    - backend/app/agent/
+    - backend/app/ai/
+source_files: []
+depends_on: []
+related_to:
+    - path: backend/api_routes

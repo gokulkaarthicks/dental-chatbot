@@ -20,7 +20,7 @@ from app.models.base import (
     UTCDateTime,
     utcnow,
 )
-from app.models.conversations import Conversation, Message
+from app.models.conversations import Conversation, ConversationFeedback, Message
 from app.models.family import FamilyGroup, FamilyMember
 from app.models.operations import (
     AppMetadata,
@@ -47,6 +47,7 @@ __all__ = [
     "BookingGroup",
     "BookingProposal",
     "Conversation",
+    "ConversationFeedback",
     "ConversationStatus",
     "FamilyGroup",
     "FamilyMember",

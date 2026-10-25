@@ -1,0 +1,1 @@
+React functional components with hooks; Lucide icons; CSS class names scoped with the `sd-` prefix; no client-side router (hash-based navigation only).

@@ -1,0 +1,5 @@
+- Conversation lifecycle is centralized in `useChat`; components receive data and callbacks as props and never invoke `chatApi` or `schedulingApi` directly.
+- Optimistic user messages are inserted with a `local-*` key and `pending: true`, then reconciled against the server response which may replace them with a persisted `id`.
+- Session/thread pointers are kept in `sessionStore` (token + active conversation id) and every restore path goes through `applyConversation` so the stored pointer and rendered thread stay in sync.
+- Module-level mutable guards (`bootPromise`, `bootedMessages`, `bootedSession`, `bootedSuggestions`) coordinate across React 18 StrictMode's double mount rather than using effect flags.
+- Interactive scheduling cards are reconciled against live proposals via `markProposalsResolved` / `attachLiveProposals` so only pending proposals remain clickable while history stays visible.

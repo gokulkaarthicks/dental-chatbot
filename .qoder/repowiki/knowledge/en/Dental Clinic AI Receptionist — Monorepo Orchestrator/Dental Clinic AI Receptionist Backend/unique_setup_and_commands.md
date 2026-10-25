@@ -1,0 +1,1 @@
+`server.py` is the Uvicorn entrypoint; `scripts/e2e_demo.py` and `scripts/smoke_phase3.py` run end-to-end scenarios against the live server; `pyproject.toml` declares the package and test configuration used by both dev and CI.

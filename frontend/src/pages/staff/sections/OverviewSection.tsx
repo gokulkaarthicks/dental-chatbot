@@ -183,7 +183,7 @@ export function OverviewSection({ onNavigate }: { onNavigate: (view: StaffView) 
 
 /**
  * A summary figure. The four tiles share one surface and are divided by
- * hairlines rather than padded individually — quieter, and it keeps the row
+ * hairlines rather than padded individually, which is quieter and keeps the row
  * aligned to the panels below.
  */
 function Stat({

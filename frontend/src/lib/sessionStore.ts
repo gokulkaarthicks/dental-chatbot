@@ -1,5 +1,5 @@
 /**
- * Browser-side patient session storage — one session per browser tab.
+ * Browser-side patient session storage: one session per browser tab.
  *
  * The conversation itself is persisted server-side in SQLite; this module only
  * keeps the *pointers* the browser needs to ask for it again:

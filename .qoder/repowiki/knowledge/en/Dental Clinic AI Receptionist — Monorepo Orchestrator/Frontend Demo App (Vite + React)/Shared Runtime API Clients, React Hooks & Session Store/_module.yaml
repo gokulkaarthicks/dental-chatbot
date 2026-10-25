@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: frontend/shared_runtime
+title: 'Shared Runtime: API Clients, React Hooks & Session Store'
+scope:
+    - frontend/src/api/
+    - frontend/src/hooks/
+    - frontend/src/lib/
+source_files: []
+depends_on: []
+related_to:
+    - path: backend/api_routes

@@ -6,30 +6,31 @@
  */
 
 :root {
-  /* Neutral ramp */
+  /* Warm neutral ramp: paper rather than screen grey. */
   --c-0: #ffffff;
-  --c-25: #fcfcfd;
-  --c-50: #f8f9fb;
-  --c-75: #f3f4f7;
-  --c-100: #eceef2;
-  --c-150: #e4e7ec;
-  --c-200: #d7dbe2;
-  --c-300: #b6bdc8;
-  --c-400: #8b94a3;
-  --c-500: #646d7c;
-  --c-600: #4a5260;
-  --c-700: #353b47;
-  --c-800: #232833;
-  --c-900: #161a22;
+  --c-25: #fdfcfa;
+  --c-50: #f8f5f0;
+  --c-75: #f3efe8;
+  --c-100: #ebe5db;
+  --c-150: #e2dbcf;
+  --c-200: #d3cabd;
+  --c-300: #b4a998;
+  --c-400: #8b8172;
+  --c-500: #6a6257;
+  --c-600: #4f4a41;
+  --c-700: #38352e;
+  --c-800: #26241f;
+  --c-900: #1c1b17;
 
-  /* Accent — the only saturated colour allowed on interactive chrome.
-   * A deep clinical teal, in the family of the current ChatGPT UI accent. */
-  --accent: #0d5c4d;
-  --accent-hover: #0a4a3e;
-  --accent-tint: #edf5f1;
-  --accent-border: #cfe4da;
+  /* Accent: deep clinical forest, with a clay secondary for warm emphasis. */
+  --accent: #1f5a44;
+  --accent-hover: #174733;
+  --accent-tint: #eaf2ec;
+  --accent-border: #c7dccd;
+  --clay: #a8552f;
+  --clay-tint: #fbeee6;
 
-  /* Status (text / surface / border) — state only, never decoration */
+  /* Status (text / surface / border): state only, never decoration */
   --ok-fg: #25704a;
   --ok-bg: #edf6f0;
   --ok-bd: #cce5d7;
@@ -41,24 +42,24 @@
   --danger-bd: #efd0cd;
 
   /* Semantic aliases */
-  --bg: var(--c-50);
-  --bg-canvas: #f9f9f9;
-  --surface: var(--c-0);
-  --surface-sunken: var(--c-75);
-  --border: var(--c-200);
-  --border-soft: var(--c-150);
-  --text: var(--c-900);
-  --text-secondary: var(--c-600);
-  --text-muted: var(--c-500);
+  --bg: #f6f2eb;
+  --bg-canvas: #fbf9f5;
+  --surface: #fffefb;
+  --surface-sunken: #f2ede4;
+  --border: #ddd5c8;
+  --border-soft: #eae3d7;
+  --text: #1c1b17;
+  --text-secondary: #4f4a41;
+  --text-muted: #6a6257;
   --focus: var(--accent);
 
-  /* Thread measure — one column, shared by messages and composer */
-  --column: 768px;
+  /* Thread measure: one column, shared by messages and composer */
+  --column: 720px;
 
-  /* Radii — three steps, never mixed on the same element */
-  --r-sm: 6px;
-  --r-md: 8px;
-  --r-lg: 10px;
+  /* Radii */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
 
   /* Spacing scale (4px base) */
   --s-1: 4px;
@@ -73,8 +74,9 @@
   --s-16: 64px;
 
   --font: "Inter", ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, ui-serif, serif;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-  --shadow-pop: 0 1px 2px rgb(22 26 34 / 6%), 0 12px 32px -8px rgb(22 26 34 / 14%);
+  --shadow-pop: 0 1px 2px rgb(28 27 23 / 5%), 0 14px 34px -10px rgb(28 27 23 / 16%);
 }
 
 *,
@@ -112,7 +114,14 @@ h1,
 h2,
 h3 {
   font-weight: 600;
-  letter-spacing: -0.011em;
+  letter-spacing: -0.015em;
+}
+
+.app__title,
+.hero__title,
+.card__title {
+  font-family: var(--display);
+  letter-spacing: -0.01em;
 }
 
 button,
@@ -146,7 +155,7 @@ code {
 }
 
 ::selection {
-  background: #f2d9d7;
+  background: #f0d9c9;
 }
 
 /* ------------------------------------------------------------------ */
@@ -202,7 +211,8 @@ code {
 }
 
 .btn--primary:active:not(:disabled) {
-  background: #611c1c;
+  background: #10382a;
+  border-color: #10382a;
 }
 
 .btn--ghost {
@@ -285,7 +295,7 @@ code {
 .input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgb(141 42 42 / 10%);
+  box-shadow: 0 0 0 3px rgb(31 90 68 / 12%);
 }
 
 textarea.input {
@@ -399,7 +409,7 @@ select.input {
 }
 
 /* ------------------------------------------------------------------ */
-/* Legacy Phase-1 overview (/overview) — shares the same tokens        */
+/* Legacy Phase-1 overview (/overview): shares the same tokens        */
 /* ------------------------------------------------------------------ */
 
 .app {

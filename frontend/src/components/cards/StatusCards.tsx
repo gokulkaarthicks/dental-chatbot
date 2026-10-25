@@ -19,7 +19,7 @@ export function ConfirmationCardView({ card }: { card: ConfirmationCard }) {
         {card.appointments.map((appointment) => (
           <li key={appointment.starts_at + (appointment.patient_name ?? "")}>
             <p className="confirmed__when">
-              {formatSlotDay(appointment.starts_at)} · {formatSlotTime(appointment.starts_at)} –{" "}
+              {formatSlotDay(appointment.starts_at)} · {formatSlotTime(appointment.starts_at)} -{" "}
               {formatSlotTime(appointment.ends_at)}
             </p>
             <p className="confirmed__meta">
@@ -126,7 +126,7 @@ export function FamilyOptionCardView({
  * Front-desk handoff status.
  *
  * Wording is derived from the stored status, and never claims a person has read
- * or replied — the system cannot verify that.
+ * or replied; the system cannot verify that.
  */
 export function HandoffCardView({ card }: { card: HandoffCard }) {
   const urgent = card.entries.some((entry) => entry.severity === "urgent" || entry.severity === "high");

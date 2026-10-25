@@ -390,7 +390,7 @@ export function useChat() {
    *
    * A stored conversation id is offered as a resume hint, which lets a browser
    * that lost its token (server restart, cleared storage) pick its thread back
-   * up — but the backend only hands it over to a session verified as the same
+   * up, but the backend only hands it over to a session verified as the same
    * patient, so this is never a way around the token.
    */
   const startFreshSession = useCallback(
@@ -704,6 +704,30 @@ export function useChat() {
     markLiveProposals(messages.flatMap((message) => message.cards ?? []));
   }, [markLiveProposals, messages, trackAvailability]);
 
+  /**
+   * Rate the assistant turn that just answered. The token stays inside this
+   * hook, so the component layer never handles a credential. A failed rating
+   * is a quiet warning: it must not interrupt the conversation.
+   */
+  const submitFeedback = useCallback(
+    async (messageId: number, rating: "up" | "down", reason?: string) => {
+      const token = tokenRef.current;
+      const thread = conversationRef.current;
+      if (!token || !thread) return false;
+      try {
+        await chatApi.submitFeedback(token, thread, messageId, rating, reason);
+        return true;
+      } catch {
+        setNotice({
+          level: "warning",
+          text: "That feedback did not send. You can keep chatting.",
+        });
+        return false;
+      }
+    },
+    [],
+  );
+
   return {
     status,
     fatalError,
@@ -718,6 +742,7 @@ export function useChat() {
     retryLast,
     newConversation,
     reload,
+    submitFeedback,
     dismissNotice: () => setNotice(null),
     ...card,
   };

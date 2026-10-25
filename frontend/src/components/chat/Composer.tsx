@@ -107,9 +107,7 @@ export function Composer({
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={handleKeyDown}
           disabled={disabled}
-          aria-describedby={
-            dictationError ? "chat-input-dictation-error chat-input-hint" : "chat-input-hint"
-          }
+          aria-describedby={dictationError ? "chat-input-dictation-error" : undefined}
         />
         {dictation.supported && (
           <button
@@ -148,10 +146,6 @@ export function Composer({
           {dictationError}
         </p>
       )}
-      <p className="composer__hint" id="chat-input-hint">
-        <span className="composer__key">Enter</span> to send ·{" "}
-        <span className="composer__key">Shift + Enter</span> for a new line.
-      </p>
     </form>
   );
 }

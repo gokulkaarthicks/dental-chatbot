@@ -1,51 +1,44 @@
 # Oral-B Dental Care AI Receptionist
 
-This repository contains a fictional dental practice receptionist for Oral-B Dental Care in San Francisco. Patients use a conversational React interface to register, verify their identity, ask clinic questions, and manage cleaning, checkup, and emergency appointments. The receptionist understands natural language, but the backend owns validation, authorization, scheduling, and database changes.
-
-Staff use a separate dashboard backed by the same SQLite database. It provides appointment and patient views, pending requests, emergency alerts, and staff actions such as booking, rescheduling, cancelling, and completing appointments. The clinic data and credentials are demonstration fixtures, not real practice data.
+A fictional dental practice receptionist. Patients use a conversational React UI to register, verify identity, ask clinic questions, and book cleaning, checkup, or emergency appointments; staff use a separate dashboard over the same SQLite database. The model interprets language, but Python and SQLite own validation, authorization, scheduling, and every state change. Clinic data and credentials are demonstration fixtures, not real practice data.
 
 ## Features
 
-### Patient experience
+**Patient**
 
-- Conversational patient interface with persisted conversation history.
-- New-patient registration with name, phone, date of birth, insurance, and validation.
-- Existing-patient verification before patient records or scheduling are exposed.
-- Cleaning, general checkup, and emergency appointment requests.
-- Natural-language date and time preferences in the clinic timezone.
-- Provider, appointment-type, and time preferences.
-- Clickable availability cards. Selecting a card creates a proposal and does not book by itself.
-- Explicit confirmation before a booking, reschedule, or cancellation is committed.
-- Appointment listing, rescheduling, and cancellation after verification.
-- Answers about insurance, self-pay, payment methods, hours, location, and clinic policies from configured practice data.
+- Conversational chat with persisted history.
+- Registration, and identity verification before any record or scheduling is exposed.
+- Cleaning, checkup, and emergency requests; natural-language dates in the clinic timezone.
+- Provider, type, and time preferences; clickable availability cards that create a proposal and never book by themselves.
+- Explicit confirmation before any booking, reschedule, or cancellation.
+- Answers on insurance, self-pay, membership, financing, payment, hours, location, and policies from configured data.
+- A rateable final assistant turn (thumbs up, or thumbs down with an optional comment) surfaced in staff.
 
-### Complex scheduling
+**Complex scheduling**
 
-- Family bookings with a separate patient, appointment type, duration, and provider eligibility for each participant.
-- Coordinated contiguous, back-to-back options when the requested family shape can be satisfied.
-- One confirmation transaction for a family proposal. The requested participant count is preserved.
-- Booking-policy checks that prevent an existing patient or pending request from silently becoming an additional visit.
+- Family bookings with a separate patient, type, duration, and provider eligibility per member.
+- Coordinated back-to-back options when the requested shape can be satisfied.
+- One atomic confirmation per family proposal.
+- Booking-policy checks that stop an existing visit or pending request from silently becoming an extra one.
 
-### Staff operations
+**Staff**
 
-- Demo staff authentication with server-side sessions, an HttpOnly session cookie, and CSRF protection for writes.
-- Appointment and patient records from the same database used by patient chat.
-- Pending request and handoff queue.
-- Emergency alert board with acknowledgement and resolution actions.
-- Staff appointment creation, rescheduling, cancellation, and completion.
-- Dashboard refresh after staff mutations so the displayed state follows the database.
+- Demo auth with server-side sessions, an HttpOnly cookie, and CSRF protection for writes.
+- Appointment and patient views, pending/handoff queue, and an emergency alert board.
+- Conversation feedback: positive share, counts, and the rated reply with any comment.
+- Create, reschedule, cancel, and complete appointments; the dashboard refreshes after mutations.
 
 ## Technology stack
 
-| Area        | Technology                                                | Why it is used here                                               |
-| ----------- | --------------------------------------------------------- | ----------------------------------------------------------------- |
-| Frontend    | React 18, TypeScript, Vite, Lucide React                  | Typed client for chat, cards, clinic overview, and staff screens. |
-| Backend     | Python 3.12, FastAPI, Pydantic                            | Typed HTTP APIs and deterministic workflow boundaries.            |
-| AI          | DeepSeek API through its OpenAI-compatible chat interface | Natural-language interpretation and tool selection.               |
-| Persistence | SQLite, SQLAlchemy 2, SQLite WAL and foreign keys         | Compact relational persistence for the assessment demo.           |
-| Runtime     | Docker Compose, nginx                                     | Reproducible backend and frontend startup.                        |
+| Area        | Technology                                              | Why                                                   |
+| ----------- | ------------------------------------------------------ | ----------------------------------------------------- |
+| Frontend    | React 18, TypeScript, Vite, Lucide React               | Typed client for chat, cards, and staff screens.      |
+| Backend     | Python 3.12, FastAPI, Pydantic                         | Typed APIs and deterministic workflow boundaries.     |
+| AI          | DeepSeek (OpenAI-compatible chat API)                  | Natural-language interpretation and tool selection.   |
+| Persistence | SQLite, SQLAlchemy 2 (WAL, foreign keys)               | Compact, inspectable relational store.                |
+| Runtime     | Docker Compose, nginx                                  | Reproducible backend and frontend startup.            |
 
-The model-facing surface is small. Appointment decisions stay in Python and SQLite, where the state transitions are inspectable.
+The model-facing surface is small: appointment decisions stay in Python and SQLite, where the state transitions are inspectable.
 
 ## Architecture
 
@@ -56,15 +49,11 @@ flowchart TD
     API --> C[Conversation and session services]
     API --> D[Scheduling, patient, emergency, and staff services]
     C --> L[DeepSeek API]
-    D --> DB[(SQLite and SQLAlchemy)]
-    C --> DB
+    C --> DB[(SQLite and SQLAlchemy)]
+    D --> DB
 ```
 
-The patient and staff interfaces are separate frontend paths, but both call FastAPI. Services cover conversations, patient sessions, registration, verification, scheduling, emergencies, staff authentication, and handoff. SQLAlchemy models cover patients, providers, appointment types, availability, slot claims, appointments, booking groups, proposals, conversations, sessions, alerts, requests, audit records, and idempotency records.
-
-For a patient message, FastAPI resolves the opaque session token, loads the session-owned conversation, persists the incoming message, and builds the full chronological history with clinic facts and tools. DeepSeek interprets the request and may request a tool. Pydantic validates its arguments, FastAPI executes the deterministic service, and tool results return to the bounded conversation loop. The final response and structured cards are persisted and rendered by React.
-
-The model decides how to interpret language and which allowed tool to request. It cannot assert identity, invent clinic policy, or confirm a booking. Direct card actions call deterministic scheduling endpoints instead of making another model request.
+Both UIs are separate frontend paths that call the same FastAPI. For each message, FastAPI resolves the session token, loads the session-owned conversation, persists the message, and builds chronological history plus clinic facts and tools. DeepSeek picks a tool, Pydantic validates its arguments, a deterministic service runs, and results return to a bounded loop; the reply and structured cards are persisted and rendered by React. The model cannot assert identity, invent policy, or confirm a booking, and direct card actions call deterministic endpoints rather than the model.
 
 ## Getting started
 
@@ -74,7 +63,7 @@ cd dental-chatbot
 cp .env.example .env
 ```
 
-Put the DeepSeek key in `.env`:
+Put the DeepSeek key in `.env` (read by the backend container only):
 
 ```dotenv
 DEEPSEEK_API_KEY=your_key_here
@@ -82,100 +71,71 @@ DEEPSEEK_MODEL=deepseek-flash
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
-The key is read by the backend container only. Start the application with:
+Start it:
 
 ```bash
 docker compose up --build -d
 ```
 
-Open [http://localhost:8080](http://localhost:8080) for patient chat and [http://localhost:8080/staff](http://localhost:8080/staff) for the staff dashboard. The seeded demo login is `root` / `root`. The backend is at [http://localhost:8000](http://localhost:8000), Swagger UI is at [http://localhost:8000/docs](http://localhost:8000/docs), and health is at [http://localhost:8000/api/health](http://localhost:8000/api/health). The frontend nginx proxy also exposes Swagger UI at [http://localhost:8080/docs](http://localhost:8080/docs).
+- Patient chat: [http://localhost:8080](http://localhost:8080)
+- Staff dashboard: [http://localhost:8080/staff](http://localhost:8080/staff) (seeded login `root` / `root`)
+- API: [http://localhost:8000](http://localhost:8000) · Swagger: [/docs](http://localhost:8000/docs) · Health: [/api/health](http://localhost:8000/api/health)
 
-## Demo database and development commands
+## Demo database and commands
 
-Startup creates the schema and seeds an empty database. Fixtures contain three providers, eight patients in two family groups, three appointment types, 60 days of 30-minute availability per provider, six upcoming appointments, three completed visits, staff records, pending requests and alerts, conversations, proposals, audit rows, and idempotency rows. Seed keys make repeated seeding idempotent.
+Startup creates the schema and seeds an empty database: providers, patients in family groups, appointment types, 60 days of availability, appointments, staff, pending requests and alerts, conversations, proposals, and audit/idempotency rows. Seed keys make reseeding idempotent.
 
-| Command                        | Behavior                                                                                              |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| `make seed`                    | Inserts missing fixtures without deleting existing records.                                           |
-| `make reset-demo`              | Stops writers, recreates the database, reseeds, issues a new reset generation, and restarts services. |
-| `make demo-status`             | Prints the fixture summary as JSON.                                                                   |
-| `make backend-logs`            | Follows backend logs.                                                                                 |
-| `make frontend-logs`           | Follows frontend logs.                                                                                |
-| `docker compose up --build -d` | Builds and starts both services.                                                                      |
-| `docker compose logs -f`       | Follows both services.                                                                                |
-| `docker compose ps`            | Shows service status.                                                                                 |
-| `docker compose down`          | Stops services and preserves the named volume.                                                        |
+| Command                        | Behavior                                                                     |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| `make seed`                    | Inserts missing fixtures without deleting existing records.                 |
+| `make reset-demo`              | Recreates the DB, reseeds, issues a new reset generation, restarts services. |
+| `make demo-status`             | Prints the fixture summary as JSON.                                         |
+| `make backend-logs` / `make frontend-logs` | Follows service logs.                                            |
+| `docker compose up --build -d` | Builds and starts both services.                                            |
+| `docker compose down`          | Stops services and preserves the named volume.                              |
 
-An ordinary restart preserves records because SQLite is stored on the named `dental-receptionist-clinic-data` volume. `make reset-demo` deletes the database and its WAL and shared-memory sidecars, recreates the schema, and invalidates prior conversation IDs, patient sessions, staff sessions, pending proposals, and idempotency records. `docker compose down -v` also removes the volume.
+SQLite lives on the named `dental-receptionist-clinic-data` volume, so a restart preserves records. `make reset-demo` deletes the database and its sidecars and invalidates old sessions, proposals, and idempotency rows. `docker compose down -v` also removes the volume.
 
 ## Core workflows
 
-### New patient registration
+- **Registration:** collect name, US phone, date of birth, and insurance; normalizers reject malformed or ambiguous input, and a patient is created only when required fields are valid.
+- **Booking:** the agent derives type, date window, provider, and time. Availability filters business hours, eligibility, duration, existing appointments, staff blocks, and active claims, using `America/Los_Angeles`. Slot cards create a 2-minute hold; the patient must confirm; "Change" releases the hold immediately; confirmation rechecks live availability before writing.
+- **Existing patients:** verify with registration identity, then list, reschedule, or cancel; ownership is checked before any change.
+- **Family:** each member is tracked independently. A verified patient may book for anyone in the same household, but others' history and insurance stay private without their own verification. One card, one atomic confirmation, rollback on conflict.
+- **Emergency:** Python triage checks symptoms first. Life-threatening indicators get immediate 911/ER guidance before registration or search; other urgent reports need a callback name and valid US phone and create a staff alert. No external notification is implemented.
+- **Inquiries:** insurance, payment, hours, location, and contact answers come from configured policy data; the assistant relays facts rather than inventing coverage or prices.
 
-The receptionist collects a name, US phone number, date of birth, and insurance choice. Backend validators normalize names and phones, reject malformed or ambiguous dates, and accept configured plans or self-pay. A patient is created only after required fields are valid. Scheduling becomes available after registration.
+## Reliability and integrity
 
-### Appointment booking
+Availability is 30-minute provider slots consumed contiguously. `SlotClaim` links an appointment or proposal to each interval, and a database uniqueness constraint allows only one active claim per slot, the load-bearing overlap protection.
 
-The agent identifies appointment type, date window, provider preference, and time preference. Availability filters business hours, provider eligibility, duration, existing appointments, staff blocks, and active claims. Natural-language dates use `America/Los_Angeles`; ambiguous and impossible dates are surfaced.
+Proposals run under `BEGIN IMMEDIATE`, revalidate intervals, and record holds. Holds last 2 minutes (`HOLD_MINUTES`) and release early on a new search or "Change"; an expired hold frees the slot but leaves the proposal, which may still be confirmed after a fresh recheck or reports a conflict if taken. Confirmation takes another `BEGIN IMMEDIATE`, revalidates, releases holds, writes the appointment or family group, and marks the proposal accepted: all-or-nothing, rolling back on failure.
 
-The UI displays slots as cards. A click creates a pending proposal and holds the time for 2 minutes. The patient must confirm. Asking for other times ("Change") releases the hold immediately rather than at the end of the window. Confirmation rechecks the slots and writes the appointment only after the recheck succeeds.
+Client and confirmation keys make retries idempotent, so replaying an accepted confirmation returns the committed result. Stale, superseded, and rejected cards leave the actionable UI. Rescheduling names the verified appointment it replaces: success marks the original `rescheduled`, preserves its history, and creates a new row via `rescheduled_from_id`; rejection, expiry, or conflict leaves the original booked.
 
-### Existing patients
+## Conversations
 
-Existing patients verify with the registration identity fields required by the workflow. A verified patient can list upcoming appointments, request a reschedule, or request cancellation. The backend checks ownership before changing a target appointment.
+Sessions use opaque tokens; messages and tool-call records live in SQLite and are sent to DeepSeek every turn (history is not summarized or trimmed). Refresh restores the thread from SQLite with live pending proposals so cards reconcile with database state, and a new conversation starts a fresh thread without deleting history. A reset-generation mismatch invalidates old browser state, sessions, and proposals. The last assistant turn can be rated; a thumbs-down takes an optional comment stored against that message and shown at `/staff#/feedback`.
 
-### Family scheduling
+## Error handling
 
-The conversation tracks each family member independently. Each item has its patient, appointment type, duration, provider constraints, and slot. The scheduler preserves the requested participant count and confirms the complete family proposal atomically. A conflict rolls back the whole group.
+- Invalid fields return validation feedback with no partial records.
+- Unavailable, conflicting, expired, or stale actions return a safe error and require a fresh action.
+- Duplicate clicks and confirmation retries use idempotency records.
+- DeepSeek timeouts and transient 5xx failures use bounded retries; continued failure returns a degraded fallback, never a false success.
+- Database and transaction failures roll back; booking success is returned only after a post-commit read-back.
+- Expired or reset sessions require a new session; staff sessions cannot access patient routes.
 
-### Emergency escalation
+Structured logs include request IDs and event names; API keys and patient details are scrubbed.
 
-Python triage checks symptoms. Airway or other life-threatening indicators receive immediate 911 or emergency-room guidance before registration, verification, or availability search. Other urgent reports require a callback name and valid US phone number, then create a staff alert. Alerts are stored for staff review; no external notification is implemented.
-
-### General inquiries
-
-Insurance, self-pay, payment, hours, location, and contact answers come from configured clinic policies and insurance data. The assistant is instructed to relay those facts rather than invent coverage or prices.
-
-## Scheduling reliability and data integrity
-
-Availability is represented as 30-minute provider slots. Appointment types consume contiguous slots. `SlotClaim` joins an appointment or proposal to each interval, and a database uniqueness constraint permits only one active claim per slot. Service checks provide useful messages; the database constraint is the load-bearing overlap protection.
-
-Proposal creation runs under `BEGIN IMMEDIATE`, revalidates intervals, and records active holds. Holds last 2 minutes (`HOLD_MINUTES`) and are released earlier whenever the patient changes their mind: a new search, or a "Change" click, hands the time back in the same turn. When the two-minute hold expires, its slot claim is released but the pending proposal remains a record of the patient's choice; confirmation revalidates live availability and succeeds only if the slot is still open. Confirmation uses another `BEGIN IMMEDIATE`, revalidates all intervals, releases holds, creates the appointment or appointments, and marks the proposal accepted. A failure rolls back the transaction.
-
-Client create keys and confirmation keys provide idempotent retries. Replaying an accepted confirmation returns the committed result rather than creating another booking. Stale or superseded cards, and explicitly rejected proposals, are removed from the actionable UI. An expired hold is different: its proposal may still be confirmed after a fresh availability recheck, or it reports a conflict if another booking has taken the slot. A conflict cannot produce a success response.
-
-Rescheduling is distinct from a new booking. A reschedule proposal names the verified appointment it replaces. Successful confirmation marks the original `rescheduled`, preserves its historical time and provider, and creates a new booked row linked through `rescheduled_from_id`. Old claims are released in the same transaction. A rejection, expiry, or conflict leaves the original booked. An explicitly requested additional visit does not cancel the existing appointment.
-
-Family confirmation writes all members in one transaction. Patient ownership is checked for the requesting conversation, and booking policy prevents a second active visit unless an additional visit was explicitly requested. These guarantees depend on the current SQLite transactions and constraints, not distributed booking coordination.
-
-## Conversation management
-
-Patient sessions use opaque tokens. Conversations and messages are stored in SQLite and linked to their owning session. Full chronological history, including tool-call records needed by the runner, is sent to DeepSeek on every turn. The current implementation does not summarize or automatically trim history.
-
-Refresh restores the conversation from SQLite. The server returns live pending proposals so cards can be reconciled with database state. Starting a new conversation creates a separate thread without deleting prior history. A reset-generation mismatch invalidates old browser state, sessions, and proposals. Session-scoped lookup prevents access by guessing a conversation ID.
-
-## Error handling and fallback behavior
-
-- Invalid registration fields return validation feedback without partial patient records.
-- Unavailable, conflicting, expired, or stale scheduling actions return a safe error and require a fresh action.
-- Duplicate card clicks and confirmation retries use idempotency records.
-- DeepSeek timeout and transient 5xx failures use bounded retries. Continued failure returns a degraded fallback rather than claiming success.
-- Database and transaction failures roll back writes. Booking success is returned only after post-commit read-back.
-- Expired or reset-invalid sessions require a new session. Staff sessions are separate and cannot access patient routes.
-- Life-threatening symptoms receive immediate emergency guidance. Other alerts are filed only when callback details are valid.
-
-Structured logs include request IDs and operational event names. API keys and patient details are excluded or scrubbed from logged fields.
-
-## Testing and validation
-
-Automated backend tests are in `backend/tests` and can be run with:
+## Testing
 
 ```bash
 cd backend
 pytest
 ```
 
-The local test command requires Python 3.12, the backend dependencies from `backend/requirements.txt`, and `pytest` available in that Python environment. For example:
+This requires Python 3.12 and the backend dependencies. To set up locally:
 
 ```bash
 python3.12 -m venv .venv
@@ -183,69 +143,52 @@ source .venv/bin/activate
 python -m pip install -r backend/requirements.txt pytest ruff
 ```
 
-Docker Compose can run the application without a host Python or Node installation, but the documented local test and pre-push commands use the host Python environment.
+The push hook runs **ruff auto-fix → ruff check → pytest**; install it once per clone with `make hooks`. Auto-fixable issues are folded into the push, failures abort it, and a single push can bypass with `git push --no-verify`.
 
-### Pre-push quality gate
+| Command      | Behavior                                             |
+| ------------ | ---------------------------------------------------- |
+| `make hooks` | Installs the `pre-push` hook into `.git/hooks`.      |
+| `make check` | Runs the same gate manually.                         |
+| `make lint`  | Auto-fixes and reports backend lint issues.          |
+| `make test`  | Runs backend tests only.                             |
 
-After the local hook is installed, `git push` runs the same gate: **ruff auto-fix → ruff check → pytest**. If the hook is not installed, Git does not run this repository-specific gate automatically. When installed, remaining lint errors or test failures abort the push. Auto-fixable issues are fixed and folded into the commit being pushed.
-
-Install the hook once per clone (installed into local `.git/hooks`, not tracked):
+The scripted end-to-end check drives a running server through the scenarios with the real model (inquiries, registration and booking, subjective dates, rescheduling, family booking, emergency triage, cancellation, privacy):
 
 ```bash
-make hooks      # same as: bash scripts/install-git-hooks.sh
+# with the containers running and DEEPSEEK_API_KEY set
+python backend/scripts/e2e_demo.py --base http://localhost:8000
 ```
 
-| Command      | Behavior                                                    |
-| ------------ | ----------------------------------------------------------- |
-| `make hooks` | Installs the `pre-push` hook into `.git/hooks`.             |
-| `make check` | Runs the exact same gate manually (lint auto-fix + pytest). |
-| `make lint`  | Auto-fixes and reports backend lint issues.                 |
-| `make test`  | Runs backend tests only.                                    |
+It writes appointments into the demo database; run `make reset-demo` afterwards.
 
-The hook needs `ruff` and `pytest` on a Python it can find (for example, the repository `.venv` or `python3`). Emergency bypass for a single push: `git push --no-verify`.
+## Design decisions
 
-No current pass count is claimed because tests were not run for this release update. A short manual review is: register and book a patient, refresh and inspect the restored conversation, reschedule a seeded appointment and verify the original is inactive, confirm a family proposal, report an urgent symptom, and acknowledge the resulting alert from `/staff`.
+One conversational agent, because the receptionist needs one coherent workflow: FastAPI tools are the language boundary, and deterministic services enforce identity, appointment rules, transactions, and authorization. SQLite keeps the demo self-contained and inspectable. Correctness (identity, atomic bookings, concurrency, and recoverable failure) ranks above extra AI capability.
 
-## Engineering decisions and prioritization
+| Priority | Focus                                              | Reason                                                    |
+| -------- | -------------------------------------------------- | --------------------------------------------------------- |
+| 1        | Identity and authorization                         | Records must not be exposed to the wrong session.         |
+| 1        | Deterministic booking and rescheduling             | A fluent answer is not useful if database state is wrong. |
+| 1        | Holds, conflict checks, idempotency, and rollback  | Actions can be retried or race with another writer.       |
+| 2        | Conversation persistence and cards                 | Multi-turn scheduling needs recoverable context.          |
+| 2        | Staff handoff and emergency alerts                 | Exceptions need a visible operational path.               |
+| 3        | Additional assistant capabilities                  | Useful only after core scheduling is trustworthy.         |
 
-I used one conversational agent because the receptionist needs one coherent workflow. FastAPI tools provide the language boundary, while deterministic services enforce identity, appointment rules, transactions, and authorization. SQLite keeps the assessment self-contained and inspectable. Conversation persistence supports multi-turn scheduling and refresh. The staff dashboard provides human handoff. Booking correctness, stale-state handling, concurrency, and recoverable failures take priority over additional AI capabilities.
+Load-bearing: deterministic booking, identity and household authorization, atomic family confirmation, emergency escalation, idempotent retries, and a staff-visible exception queue. Nice-to-have but compounding: persisted conversations, clickable availability, hold expiry, and the staff dashboard.
 
-| Priority | Feature                                           | Reason                                                                     |
-| -------- | ------------------------------------------------- | -------------------------------------------------------------------------- |
-| 1        | Identity and authorization                        | Records must not be exposed to the wrong session.                          |
-| 1        | Deterministic booking and rescheduling            | A fluent answer is not useful if database state is wrong.                  |
-| 1        | Holds, conflict checks, idempotency, and rollback | Actions can be retried or race with another writer.                        |
-| 2        | Conversation persistence and cards                | Multi-turn scheduling needs recoverable context and explicit confirmation. |
-| 2        | Staff handoff and emergency alerts                | Exceptions need a visible operational path.                                |
-| 3        | Additional assistant capabilities                 | Useful only after core scheduling is trustworthy.                          |
+Key failure modes and mitigations: double-booking and stale-card confirmations are blocked by unique active claims, `BEGIN IMMEDIATE` revalidation, fresh-availability checks, and idempotency keys; chart leaks are blocked by phone plus date-of-birth verification and session-scoped lookup, with the household link granting booking but not read; model outages degrade to a message that never claims success plus a staff follow-up path; and under-triaged emergencies are caught by Python red-flag checks before registration.
 
-## Production scaling considerations
+## Production scaling
 
-The current application is a single-clinic prototype. For hundreds of locations and more than 10,000 daily conversations, I would:
+This is a single-clinic prototype. For hundreds of locations and 10,000+ daily conversations I would: move transactional data to PostgreSQL while keeping the same constraints; add clinic tenancy to every query; make timezone, hours, holidays, types, provider rules, and policies versioned config; replace demo credentials with managed identity, MFA, RBAC, and revocation; run stateless replicas with a distributed booking strategy; make alerts and retries durable background jobs; add metrics, traces, and on-call runbooks; apply per-tenant rate and cost limits; integrate EHR through idempotent adapters; and add privacy controls, staged rollout, and tested rollback. These are proposed changes, not capabilities claimed by this repository.
 
-- Move transactional data to PostgreSQL while preserving constraints for slot claims, idempotency, and tenant ownership.
-- Add explicit clinic tenancy to every patient, schedule, conversation, staff, and audit query.
-- Store clinic-specific timezone, hours, holidays, appointment types, provider rules, and policies as versioned configuration.
-- Replace demo credentials with managed identity, MFA, role-based permissions, session revocation, and audit review.
-- Run stateless backend replicas with a defined distributed booking strategy.
-- Use durable background jobs for alerts, retries, reconciliation, and dead-letter handling.
-- Add metrics, traces, centralized structured logs, latency monitoring, and on-call runbooks.
-- Apply tenant and user rate limits, DeepSeek concurrency budgets, request limits, and cost controls.
-- Integrate with EHR or practice-management systems through idempotent adapters and reconciliation.
-- Add privacy controls, encryption and key management, retention, access reviews, backup testing, and operational security review.
-- Use staged deployment, migration checks, feature flags, backups, and tested rollback.
-
-These are proposed production changes, not capabilities claimed by this repository.
-
-## Current limitations
+## Limitations
 
 - The clinic, patients, providers, appointments, policies, and contact details are fictional fixtures.
-- The `root` / `root` login is demo-only and has no production identity system or MFA.
+- `root` / `root` is demo-only and has no production identity system or MFA.
 - SQLite and one named Docker volume are not multi-location write infrastructure.
-- There is no live EHR or practice-management integration.
-- Insurance answers are configured policy text, not live eligibility verification.
-- There is no real payment processing or voice calling interface.
-- Emergency alerts are stored for staff review, with no external SMS, email, paging, or emergency-service integration.
+- There is no live EHR integration; insurance answers are configured text, not eligibility checks.
+- There is no real payment processing or voice calling; emergency alerts are stored for staff review with no external SMS, paging, or emergency-service integration.
 - DeepSeek is required for normal conversation; the fallback cannot replace receptionist workflow.
 
 ## Repository structure
@@ -254,34 +197,34 @@ These are proposed production changes, not capabilities claimed by this reposito
 .
 ├── backend/
 │   ├── app/
-│   │   ├── agent/              # prompts, tools, scheduling tools, turn runner
-│   │   ├── ai/                 # DeepSeek client and provider errors
-│   │   ├── api/                # chat, scheduling, staff, health, clinic, demo routes
-│   │   ├── models/              # SQLAlchemy domain models and state enums
-│   │   ├── services/            # patients, conversations, availability, booking, staff, alerts
-│   │   ├── cli.py               # seed, reset-demo, demo-status
-│   │   ├── db.py                # engine and SQLite pragmas
-│   │   ├── migrations.py        # startup schema reconciliation
-│   │   └── seed_fixtures.py     # reproducible demo records
-│   ├── tests/                   # backend automated tests
-│   ├── scripts/                 # migration check + phase-3 smoke script
-│   ├── pyproject.toml           # ruff + pytest configuration
+│   │   ├── agent/       # prompts, tools, scheduling tools, turn runner
+│   │   ├── ai/          # DeepSeek client and provider errors
+│   │   ├── api/         # chat, scheduling, staff, health, clinic, demo routes
+│   │   ├── models/      # SQLAlchemy models and state enums
+│   │   ├── services/    # patients, conversations, availability, booking, staff, alerts
+│   │   ├── cli.py       # seed, reset-demo, demo-status
+│   │   ├── db.py        # engine and SQLite pragmas
+│   │   ├── migrations.py
+│   │   └── seed_fixtures.py
+│   ├── tests/           # backend automated tests
+│   ├── scripts/         # migration check + phase-3 smoke script
+│   ├── pyproject.toml   # ruff + pytest configuration
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── api/                 # typed patient and staff clients
-│   │   ├── components/          # shared UI and appointment cards
-│   │   ├── hooks/               # chat, session, reset-generation, API hooks
-│   │   └── pages/               # chat, overview, staff login, dashboard
+│   │   ├── api/         # typed patient and staff clients
+│   │   ├── components/  # shared UI and appointment cards
+│   │   ├── hooks/       # chat, session, reset-generation, API hooks
+│   │   └── pages/       # chat, overview, staff login, dashboard
 │   ├── Dockerfile
 │   └── nginx.conf
-├── scripts/                     # pre-push lint + test gate (git hooks)
+├── scripts/             # pre-push lint + test gate (git hooks)
 ├── Makefile
 ├── docker-compose.yml
 └── .env.example
 ```
 
-## Demo Video
+## Demo video
 
-[https://www.loom.com/share/8d67378fb2d94603a41f5e24ec323074](https://www.loom.com/share/8d67378fb2d94603a41f5e24ec323074)
+https://www.loom.com/share/de046be08c204110959007fedcd38d00

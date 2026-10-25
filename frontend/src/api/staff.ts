@@ -188,6 +188,21 @@ export type PendingRequest = {
 };
 
 export type PendingRequestListResponse = { requests: PendingRequest[]; count: number };
+
+export type ConversationFeedbackRow = {
+  id: number;
+  rating: "up" | "down";
+  reason: string | null;
+  created_at: string;
+  conversation_title: string | null;
+  excerpt: string;
+};
+
+export type ConversationFeedbackResponse = {
+  counts: { up: number; down: number; total: number };
+  window_days: number;
+  feedback: ConversationFeedbackRow[];
+};
 export type PendingRequestDetailResponse = { request: PendingRequest; activity: AuditEntry[] };
 
 export type PatientDetailResponse = {
@@ -282,6 +297,9 @@ export const staffApi = {
   logout: () => request<{ ok: boolean }>("/staff/session", { method: "DELETE" }),
 
   summary: () => request<{ counts: SummaryCounts; generated_at: string }>("/staff/summary"),
+
+  feedback: (days = 30, signal?: AbortSignal) =>
+    request<ConversationFeedbackResponse>(`/staff/feedback${qs({ days })}`, { signal }),
 
   appointments: (query: AppointmentQuery = {}, signal?: AbortSignal) =>
     request<AppointmentListResponse>(

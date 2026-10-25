@@ -35,13 +35,13 @@ function render() {
   return <ChatPage />;
 }
 
-const TITLE_FALLBACK = "AI Receptionist";
+const TITLE_FALLBACK = "Front Desk";
 
 /**
  * Keep the document title on the same branding as the visible chrome.
  *
  * The name comes from the shared clinic configuration (`/api/clinic`), never a
- * literal, and is fetched once per page load through the memoised helper — the
+ * literal, and is fetched once per page load through the memoised helper; the
  * staff pages build their own clinic query too, and both settle on one answer.
  * Until it arrives the neutral fallback is used, never another clinic's name.
  */

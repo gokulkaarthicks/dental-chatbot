@@ -69,7 +69,6 @@ from app.models import (
     Conversation,
     FamilyMember,
     IdempotencyRecord,
-    Patient,
     ProposalItem,
     ProposalStatus,
     SlotClaim,
@@ -1397,10 +1396,10 @@ def _patient_allowed_on_proposal(
     """Whether this conversation may confirm a visit for ``patient_id``.
 
     Solo bookings and reschedules are the verified patient only. A household
-    booking may also include minors in the proposal's family group -- the same
-    people ``check_family_authorisation`` allowed when the hold was created.
-    Applying the solo ownership rule to household items was rejecting every
-    child's time as ``slot_taken`` and superseding the hold on confirm.
+    booking may also include anyone else in the proposal's linked family group,
+    including a spouse, matching ``check_family_authorisation`` when the hold was
+    created. Applying the solo ownership rule to household items was rejecting a
+    family member's time as ``slot_taken`` and superseding the hold on confirm.
     """
     if _belongs_to_conversation_patient(proposal, patient_id):
         return True
@@ -1422,18 +1421,7 @@ def _patient_allowed_on_proposal(
             FamilyMember.patient_id == patient_id,
         )
     ).first()
-    if owner_link is None or member_link is None:
-        return False
-    other = session.get(Patient, patient_id)
-    if other is None or other.date_of_birth is None:
-        return False
-    from app.timeutil import clinic_today
-
-    today = clinic_today()
-    age = today.year - other.date_of_birth.year - (
-        (today.month, today.day) < (other.date_of_birth.month, other.date_of_birth.day)
-    )
-    return age < 18
+    return owner_link is not None and member_link is not None
 
 
 def _visit_shape(proposal: BookingProposal) -> str:
@@ -1755,9 +1743,9 @@ def _resolve_confirm_key(
 
     Precedence, and why:
 
-    1. a key supplied by the caller (UI retry, ``confirm_key`` header) — always
+    1. a key supplied by the caller (UI retry, ``confirm_key`` header), always
        honoured;
-    2. a key this proposal already *completed* with — a genuine retry replays;
+    2. a key this proposal already *completed* with, a genuine retry replays;
     3. a fresh random key.
 
     ``proposal.confirm_key`` alone is not enough. It is written by an attempt

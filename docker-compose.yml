@@ -1,7 +1,7 @@
 # Monolithic demo: FastAPI backend + React frontend.
 #
 # The only host-side configuration is the .env file (three DeepSeek variables).
-# The API key is injected into the *backend* container only — it is never
+# The API key is injected into the *backend* container only: it is never
 # passed to the frontend build or bundle.
 #
 # SQLite lives on the named volume `clinic-data`, so `docker compose down` plus

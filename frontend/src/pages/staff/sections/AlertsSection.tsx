@@ -2,7 +2,7 @@
  * Staff alerts board.
  *
  * Emergencies and escalations. Urgency is carried by a text badge, a header
- * count, and a tinted row — never colour alone — so the board stays readable
+ * count, and a tinted row (never colour alone), so the board stays readable
  * for anyone who cannot distinguish the hues.
  *
  * Every acknowledge/resolve goes through the API, which persists the transition

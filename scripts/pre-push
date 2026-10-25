@@ -20,7 +20,7 @@ if ! PUSH_REFS="$(git rev-parse --abbrev-ref --symbolic-full-name '@{push}' 2>/d
 fi
 
 if ! bash "$REPO_ROOT/scripts/check-before-push.sh"; then
-  printf '\n\033[1;31m✖ Push aborted — fix the problems above and push again.\033[0m\n'
+  printf '\n\033[1;31m✖ Push aborted. Fix the problems above and push again.\033[0m\n'
   printf '  (Emergency bypass, not recommended: git push --no-verify)\n'
   exit 1
 fi
@@ -51,7 +51,7 @@ if [ -n "$COMMITTED_DIRTY" ]; then
   fi
 
   printf '\n\033[1;31m✖ The amend changed the commit, so the original push was cancelled.\033[0m\n'
-  printf '  Just run "git push" again — it will now pass on the fixed commit.\n'
+  printf '  Just run "git push" again; it will now pass on the fixed commit.\n'
   exit 1
 fi
 

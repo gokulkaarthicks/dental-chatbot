@@ -1,0 +1,5 @@
+- Components are exported as named function components whose props are declared inline as a single object type rather than separate `interface` declarations.
+- Variant-driven styling uses a string union prop (e.g. `variant`, `size`) combined with a `.filter(Boolean).join(' ')` class list that maps variants to BEM modifier classes like `btn--primary`.
+- Card rendering follows a discriminated-union pattern: a `switch` on `card.type` dispatches to a dedicated view component, with unknown types falling through to `null` for forward compatibility.
+- Stateful behavior (callbacks, busy flags, disabled state) is passed down through a single handlers object prop instead of being managed inside leaf components.
+- All visual values come from CSS custom properties defined in `global.css` (`--accent`, `--surface`, `--s-*`, `--r-*`, etc.) rather than hard-coded colors or spacings.

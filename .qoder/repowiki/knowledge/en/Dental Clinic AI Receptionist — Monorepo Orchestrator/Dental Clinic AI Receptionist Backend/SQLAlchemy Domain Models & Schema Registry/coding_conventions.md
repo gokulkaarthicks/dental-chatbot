@@ -1,0 +1,6 @@
+- Domain enums live in `base.py` as `StrEnum` subclasses and are referenced via `.value` when setting column defaults, keeping stored values stable strings rather than Python objects.
+- Cross-module model references are imported inside `if TYPE_CHECKING:` blocks to break circular import cycles between sibling model files.
+- Business invariants are enforced at the database layer through `CheckConstraint` and `UniqueConstraint` on `__table_args__` (e.g., positive duration, status membership, one active claim per slot) instead of relying solely on application checks.
+- Mutable entities inherit `TimestampMixin` to get `created_at`/`updated_at` columns with `utcnow` defaults, while static lookup tables (e.g. `AppointmentType`, `AppMetadata`) omit timestamps.
+- Every model module declares an explicit `__tablename__` and uses `ForeignKey(..., ondelete=...)` with explicit cascade semantics (`CASCADE`, `RESTRICT`, `SET NULL`) rather than relying on SQLAlchemy defaults.
+- New model classes are registered by adding their import and `__all__` entry in `app/models/__init__.py`, which is the single place that triggers table discovery via `Base.metadata.create_all`.

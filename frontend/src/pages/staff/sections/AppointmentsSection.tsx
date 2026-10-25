@@ -215,7 +215,7 @@ export function AppointmentsSection() {
                     <td className="sd-nowrap">
                       {row.day_label}
                       <span className="sd-cell-sub">
-                        {row.time_label} – {row.end_time_label}
+                        {row.time_label} - {row.end_time_label}
                       </span>
                     </td>
                     <td>
@@ -315,7 +315,7 @@ function AppointmentDrawer({
             <div className="sd-detail-head">
               {appointmentBadge(appointment.status)}
               <span className="sd-detail-head__when">
-                {appointment.day_label} · {appointment.time_label}–{appointment.end_time_label}
+                {appointment.day_label} · {appointment.time_label}-{appointment.end_time_label}
               </span>
             </div>
 

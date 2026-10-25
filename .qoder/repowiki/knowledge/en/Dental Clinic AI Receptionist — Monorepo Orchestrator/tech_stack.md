@@ -1,0 +1,1 @@
+Docker Compose (with file overlays), SQLite on a named volume shared by both services, and ruff + pytest as the host-side lint/test gate invoked by both the git hook and `make check`.

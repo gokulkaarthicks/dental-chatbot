@@ -1,0 +1,6 @@
+- Route modules expose a module-level `router = APIRouter(prefix=..., tags=[...])` and mount it at the application root rather than defining endpoints directly.
+- Authentication is expressed as typed dependencies (`CurrentPatientSession`, `CurrentStaffSession`, `CurrentStaffUser`) declared as function parameters instead of manual header/cookie checks inside handlers.
+- Blocking operations (LLM turns, heavy service calls) are wrapped in `async def` handlers that delegate to a local `work()` closure executed through `await run_in_threadpool(work)`.
+- Domain mutations raise typed exceptions from `app.services` (`StaffActionError`, `HandoffError`) which are translated to HTTP status codes via a shared `_action_error` helper rather than being caught inline per handler.
+- Request bodies use local `BaseModel` subclasses defined near the router (e.g. `LoginRequest`, `SlotSelectionRequest`) with `Field(...)` validators, keeping schema definitions co-located with the route that consumes them.
+- Database writes are committed explicitly (`db.commit()`) inside the handler or inside the service callable passed to `run_in_threadpool`, rather than relying on an auto-commit session.

@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 # 2: patient_sessions plus new columns on conversations/messages/app_metadata.
 # 3: slot holds, booking groups, proposal lifecycle, idempotency in-flight rows.
 # 4: canonical scheduling requests and proposal request identities.
-SCHEMA_VERSION = 4
+# 5: patient feedback on assistant turns.
+SCHEMA_VERSION = 5
 
 
 def create_schema() -> None:

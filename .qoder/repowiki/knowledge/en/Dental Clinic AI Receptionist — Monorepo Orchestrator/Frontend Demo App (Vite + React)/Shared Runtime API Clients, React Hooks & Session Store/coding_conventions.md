@@ -1,0 +1,6 @@
+- API methods are grouped into named objects (`chatApi`, `schedulingApi`, `staffApi`, `api`) where each function returns a typed Promise and forwards an optional `AbortSignal` for cancellation.
+- All network errors are wrapped in the shared `ApiError` class carrying the HTTP status, so callers can branch on `error instanceof ApiError && error.status === ...` rather than inspecting raw responses.
+- Per-tab persistence goes through the `sessionStore` object wrapping `sessionStorage`, never direct `localStorage` access, keeping tokens and conversation ids isolated per tab.
+- Hooks expose their internal async callbacks via `useRef` fields (e.g. `resyncRef`, `markLiveProposalsRef`, `noteScheduleSearchedRef`) so stable callback identities do not force expensive re-renders while still reading fresh values inside event handlers.
+- Long-running background work is guarded by module-level promises (`bootPromise`) and refs (`sendingRef`, `activeRequest.current`, `offeredStateRef`) to prevent double-invocation under React 18 StrictMode and across awaits.
+- Server-driven card payloads are modelled as discriminated unions in `lib/cards.ts` and consumed via type guards (`isProposalCard`, `card.type === 'slot'`) rather than ad-hoc property checks.

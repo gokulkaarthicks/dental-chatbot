@@ -1,0 +1,1 @@
+SQLAlchemy ORM with declarative mapping (`Mapped`, `mapped_column`), `StrEnum` for persisted state fields, and a custom `UTCDateTime` TypeDecorator to keep timezone-aware datetimes consistent across SQLite and other backends.

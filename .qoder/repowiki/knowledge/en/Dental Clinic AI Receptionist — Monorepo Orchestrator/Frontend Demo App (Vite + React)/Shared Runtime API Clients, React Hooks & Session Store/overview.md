@@ -1,0 +1,1 @@
+Provides the patient and staff HTTP clients, shared React hooks for chat lifecycle and scheduling cards, plus the tab-scoped session store that bridges browser state to server-side SQLite transcripts.

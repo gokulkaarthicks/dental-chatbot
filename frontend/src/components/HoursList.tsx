@@ -24,7 +24,7 @@ export function HoursList({ hours, today }: HoursListProps) {
               {day === today && <span className="hours__badge">today</span>}
             </span>
             <span className="hours__time">
-              {isOpen ? `${entry.open} – ${entry.close}` : "Closed"}
+              {isOpen ? `${entry.open} - ${entry.close}` : "Closed"}
             </span>
           </li>
         );

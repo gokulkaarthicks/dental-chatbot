@@ -209,6 +209,12 @@ export type ChatAction = {
   request_id?: string | null;
 };
 
+export type ChatFeedbackResponse = {
+  ok: boolean;
+  rating: "up" | "down";
+  message: string;
+};
+
 type ChatOptions = { signal?: AbortSignal; action?: ChatAction };
 
 function chatHeaders(token: string, json = false): Record<string, string> {
@@ -221,7 +227,7 @@ export const chatApi = {
   /**
    * Start a session. With `resumeConversationId` the server tries to hand back
    * that thread instead of opening a new one, but only when the freshly issued
-   * session is verified as the patient who owned it — so a browser that still
+   * session is verified as the patient who owned it, so a browser that still
    * holds a valid thread after losing its token can pick it up again.
    */
   startSession: (signal?: AbortSignal, options: { resumeConversationId?: string } = {}) => {
@@ -269,6 +275,27 @@ export const chatApi = {
         headers: chatHeaders(token, true),
         body: JSON.stringify({ message, ...(options.action ? { action: options.action } : {}) }),
         signal: options.signal,
+      },
+    ),
+
+  /**
+   * Rate one assistant turn. The server checks that the message belongs to
+   * this session-owned conversation, so a rating cannot address another
+   * thread. Re-rating updates the stored row.
+   */
+  submitFeedback: (
+    token: string,
+    conversationId: string,
+    messageId: number,
+    rating: "up" | "down",
+    reason?: string,
+  ) =>
+    request<ChatFeedbackResponse>(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/feedback`,
+      {
+        method: "POST",
+        headers: chatHeaders(token, true),
+        body: JSON.stringify({ message_id: messageId, rating, reason: reason || undefined }),
       },
     ),
 };

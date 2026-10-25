@@ -15,6 +15,7 @@ import {
   Inbox,
   LayoutGrid,
   MessageSquare,
+  MessageSquareHeart,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -28,9 +29,16 @@ import { AppointmentsSection } from "./sections/AppointmentsSection";
 import { OverviewSection } from "./sections/OverviewSection";
 import { RequestsSection } from "./sections/RequestsSection";
 import { AlertsSection } from "./sections/AlertsSection";
+import { FeedbackSection } from "./sections/FeedbackSection";
 import { PatientsSection } from "./sections/PatientsSection";
 
-export type StaffView = "overview" | "appointments" | "patients" | "requests" | "alerts";
+export type StaffView =
+  | "overview"
+  | "appointments"
+  | "patients"
+  | "requests"
+  | "alerts"
+  | "feedback";
 
 const VIEWS: { id: StaffView; label: string; icon: LucideIcon }[] = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
@@ -38,6 +46,7 @@ const VIEWS: { id: StaffView; label: string; icon: LucideIcon }[] = [
   { id: "patients", label: "Patients", icon: Users },
   { id: "requests", label: "Requests", icon: Inbox },
   { id: "alerts", label: "Alerts", icon: BellRing },
+  { id: "feedback", label: "Feedback", icon: MessageSquareHeart },
 ];
 
 function readViewFromHash(): StaffView {
@@ -106,6 +115,9 @@ export function StaffDashboard({ initialView }: { initialView?: StaffView }) {
       break;
     case "alerts":
       content = <AlertsSection />;
+      break;
+    case "feedback":
+      content = <FeedbackSection />;
       break;
     default:
       content = <OverviewSection onNavigate={navigate} />;

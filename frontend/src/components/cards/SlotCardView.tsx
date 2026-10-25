@@ -7,7 +7,7 @@ import type { SlotCard } from "../../lib/cards";
  * Available appointment times, grouped by day.
  *
  * Each row is a real button carrying the backend's stable slot id. The whole
- * row is clickable — the chevron is an affordance, not the target — so the hit
+ * row is clickable (the chevron is an affordance, not the target), so the hit
  * area is the full width of the card at every breakpoint.
  *
  * Every slot shows its time, dentist, and duration. Slots the server no longer
@@ -21,12 +21,14 @@ export function SlotCardView({
   busySlotId,
   disabled,
   isEnabled,
+  messageKey,
 }: {
   slots: SlotCard[];
   onSelect: (slot: SlotCard) => void;
   busySlotId: string | null;
   disabled: boolean;
-  isEnabled?: (slot: SlotCard) => boolean;
+  isEnabled?: (slot: SlotCard, messageKey?: string) => boolean;
+  messageKey?: string;
 }) {
   if (slots.length === 0) return null;
   const first = slots[0];
@@ -47,7 +49,7 @@ export function SlotCardView({
   }
   // A grid where nothing is clickable is history: say so once in the footer
   // rather than repeating "no longer open" on every row.
-  const anyLive = slots.some((slot) => (isEnabled ? isEnabled(slot) : true));
+  const anyLive = slots.some((slot) => (isEnabled ? isEnabled(slot, messageKey) : true));
 
   return (
     <CardShell
@@ -89,7 +91,7 @@ export function SlotCardView({
             <ul className="slots__list">
               {daySlots.map((slot) => {
                 const busy = busySlotId === slot.slot_id;
-                const live = isEnabled ? isEnabled(slot) : true;
+                const live = isEnabled ? isEnabled(slot, messageKey) : true;
                 const endTime = slot.end_time ?? (slot.ends_at ? formatSlotTime(slot.ends_at) : null);
                 return (
                   <li key={slot.slot_id}>
@@ -102,7 +104,7 @@ export function SlotCardView({
                     >
                       <span className="slots__time">
                         {formatSlotTime(slot.starts_at)}
-                        {endTime ? <span className="slots__end">–{endTime}</span> : null}
+                        {endTime ? <span className="slots__end">-{endTime}</span> : null}
                       </span>
                       <span className="slots__dentist">
                         {slot.provider}

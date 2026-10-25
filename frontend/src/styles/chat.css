@@ -1,4 +1,4 @@
-/* Patient chat — one thread per browser tab.
+/* Patient chat: one thread per browser tab.
    ---------------------------------------------------------------------------
    Layout contract:
      .chat                 fixed viewport height, flex column, never scrolls
@@ -27,11 +27,155 @@
 .chat {
   height: 100vh;
   height: 100dvh;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
   background: var(--surface);
   overflow: hidden;
 }
+
+.chat__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-canvas);
+}
+
+/* Practice sidebar --------------------------------------------------------- */
+
+.practice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  padding: 28px 24px 20px;
+  background: var(--surface);
+  border-right: 1px solid var(--border-soft);
+  overflow-y: auto;
+}
+
+.practice__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.practice__mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  flex: 0 0 auto;
+}
+
+.practice__eyebrow {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--clay);
+}
+
+.practice__name {
+  font-family: var(--display);
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
+.practice__lede {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.practice__facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4) 0;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.practice__fact {
+  display: flex;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.practice__fact svg {
+  margin-top: 2px;
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.practice__fact a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.practice__fact a:hover {
+  text-decoration: underline;
+}
+
+.practice__label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.practice__label svg {
+  color: var(--accent);
+}
+
+.practice__insurance {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.practice__insurance p {
+  margin-top: 4px;
+}
+
+.practice__muted {
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.practice__foot {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.practice__foot a {
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.practice__foot a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 
 /* Header ------------------------------------------------------------------ */
 
@@ -39,41 +183,14 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--s-4);
-  height: 56px;
-  padding: 0 var(--s-5);
-  background: var(--surface);
+  height: 60px;
+  padding: 0 var(--s-6);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border-soft);
   z-index: 2;
-}
-
-.chat__brand {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  min-width: 0;
-}
-
-.chat__mark {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  /* Same green mark as the staff pages: one brand, two interfaces. */
-  border-radius: var(--r-sm);
-  background: var(--accent);
-  color: #fff;
-  flex: 0 0 auto;
-}
-
-.chat__title {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .chat__header-side {
@@ -81,37 +198,6 @@
   align-items: center;
   gap: var(--s-2);
   flex: 0 0 auto;
-}
-
-.chat__status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding-left: var(--s-3);
-  margin-left: var(--s-1);
-  border-left: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.chat__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--c-300);
-}
-
-.chat__status--ready .chat__dot {
-  background: var(--ok-fg);
-}
-
-.chat__status--booting .chat__dot {
-  background: var(--warn-fg);
-}
-
-.chat__status--error .chat__dot {
-  background: var(--danger-fg);
 }
 
 /* Thread ------------------------------------------------------------------ */
@@ -123,7 +209,7 @@
   overflow-x: hidden;
   scroll-behavior: smooth;
   background: var(--bg-canvas);
-  padding: var(--s-6) var(--s-5) var(--s-4);
+  padding: var(--s-8) var(--s-6) var(--s-4);
 }
 
 .chat__column {
@@ -203,7 +289,7 @@
 }
 
 .msg__body {
-  font-size: 15px;
+  font-size: 15.5px;
   line-height: 1.7;
   display: flex;
   flex-direction: column;
@@ -213,6 +299,7 @@
 
 .msg--clinic .msg__body {
   color: var(--text);
+  max-width: 62ch;
 }
 
 .msg--patient {
@@ -222,17 +309,18 @@
 }
 
 .msg__author {
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--text-muted);
 }
 
 .msg--patient .msg__body {
-  /* Same type as the assistant; the surface step alone marks the turn, which
-     keeps long patient messages readable and the page quiet. */
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  /* A warm paper note for the patient's own words; the clinic speaks plainly. */
+  background: var(--clay-tint);
+  border: 1px solid #efd9c8;
+  border-radius: 14px 14px 4px 14px;
   padding: 10px 14px;
 }
 
@@ -263,6 +351,102 @@
 
 .msg__status {
   color: var(--warn-fg);
+}
+
+/* Feedback ---------------------------------------------------------------- */
+
+.msg__feedback {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  opacity: 0.55;
+  transition: opacity 140ms ease;
+}
+
+.msg__feedback:hover,
+.msg__feedback:focus-within {
+  opacity: 1;
+}
+
+.msg__feedback-label {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+
+.msg__feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.msg__feedback-btn:hover {
+  border-color: var(--line);
+  background: var(--bg-raised);
+  color: var(--text);
+}
+
+.msg__feedback-btn:focus-visible,
+.msg__feedback-input:focus-visible {
+  outline: 2px solid var(--c-500);
+  outline-offset: 1px;
+}
+
+.msg__feedback-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  max-width: 440px;
+}
+
+.msg__feedback-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--bg-raised);
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.msg__feedback-send,
+.msg__feedback-skip {
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--bg-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.msg__feedback-send {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg-raised);
+}
+
+.msg__feedback-skip {
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.msg__feedback-thanks {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* Typing indicator -------------------------------------------------------- */
@@ -312,8 +496,8 @@
 
 .chat__composer-wrap {
   flex: 0 0 auto;
-  background: var(--bg-canvas);
-  padding: var(--s-2) var(--s-5) var(--s-4);
+  background: linear-gradient(to bottom, transparent, var(--bg-canvas) 22%);
+  padding: var(--s-3) var(--s-6) var(--s-4);
 }
 
 .composer {
@@ -326,9 +510,10 @@
   align-items: flex-end;
   gap: var(--s-2);
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 14px;
   padding: 8px 8px 8px 16px;
   background: var(--surface);
+  box-shadow: 0 1px 2px rgb(28 27 23 / 4%);
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
@@ -337,8 +522,8 @@
 }
 
 .composer__field:focus-within {
-  border-color: var(--c-400);
-  box-shadow: 0 0 0 3px rgb(22 26 34 / 5%);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(31 90 68 / 10%);
 }
 
 .composer__input {
@@ -430,18 +615,18 @@
   flex: 0 0 auto;
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: 1px solid var(--text);
-  background: var(--text);
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
   color: #fff;
   transition: background-color 120ms ease, opacity 120ms ease;
 }
 
 .composer__send:hover:not(:disabled) {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .composer__send:disabled {
@@ -477,15 +662,48 @@
   color: var(--text-secondary);
 }
 
+/* Quick prompts ----------------------------------------------------------- */
+
+.prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.prompts__chip {
+  padding: 8px 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.prompts__chip:hover {
+  border-color: var(--accent-border);
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+
 /* Responsive -------------------------------------------------------------- */
+
+@media (max-width: 980px) {
+  .chat {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .practice {
+    display: none;
+  }
+}
 
 @media (max-width: 640px) {
   .chat__header {
     padding: 0 var(--s-3) 0 var(--s-4);
-  }
-
-  .chat__status {
-    display: none;
   }
 
   .chat__thread {

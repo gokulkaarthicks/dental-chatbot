@@ -1,0 +1,6 @@
+- Tool handlers follow a uniform shape: `(ctx: ToolContext, args: <PydanticModel>) -> dict[str, Any]`, returning `{ok, error?, message?, cards?}` payloads produced via the shared `_error` helper.
+- Identity and authorization are always read from `ToolContext.verified_patient` (or `_get_verified_patient` / `_requester` helpers), never from model-supplied arguments, so the model cannot impersonate another patient.
+- Every tool declares its input schema as a Pydantic `BaseModel` subclass of `ToolArguments` with `Field(description=...)` used as the prompt given to the model describing each parameter.
+- Tool results are passed through `_truncate` before being returned, which preserves decision fields and interactive `cards` while dropping secondary detail to stay under `MAX_TOOL_RESULT_CHARS`.
+- The runner wraps every provider call in a try/except that catches `DeepSeekError` and generic `Exception`, rolls back the session on failure, and persists a safe fallback assistant message so transcripts never contain dangling tool calls.
+- Interactive state exchanged between model and UI is carried in `cards` lists attached to assistant/tool messages, with deduplication by card identity (`proposal_id`, `slot_id`, `family_option option_id`) rather than by position.

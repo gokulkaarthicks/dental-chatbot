@@ -1,0 +1,1 @@
+pytest with SQLAlchemy ORM against in-memory/temporary SQLite databases; uses `sqlalchemy+pysqlite` URIs so WAL, foreign keys, and busy timeout pragmas from `create_db_engine` apply during tests.

@@ -16,17 +16,27 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, Response, status
+from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
 from app.agent import runner
 from app.api.deps import CurrentPatientSession, DbSession
 from app.clinic import CLINIC
 from app.config import get_settings
-from app.models import Conversation, ConversationStatus, PatientSession, utcnow
+from app.models import (
+    Conversation,
+    ConversationFeedback,
+    ConversationStatus,
+    Message,
+    PatientSession,
+    utcnow,
+)
 from app.schemas import (
     ChatConversationListResponse,
     ChatConversationResponse,
     ChatConversationSummaryResponse,
+    ChatFeedbackRequest,
+    ChatFeedbackResponse,
     ChatMessageResponse,
     ChatSendMessageRequest,
     ChatSendMessageResponse,
@@ -261,6 +271,54 @@ async def send_message(
         cards=result.cards,
         session=_session_state(db, record),
         degraded=result.degraded,
+    )
+
+
+@router.post(
+    "/conversations/{conversation_id}/feedback",
+    response_model=ChatFeedbackResponse,
+    summary="Rate one assistant turn",
+)
+def submit_feedback(
+    conversation_id: str,
+    payload: ChatFeedbackRequest,
+    db: DbSession,
+    record: CurrentPatientSession,
+) -> ChatFeedbackResponse:
+    """Record how a turn landed. Staff read the aggregate and the comments.
+
+    The message must belong to this session-owned conversation and must be an
+    assistant turn: a rating is not a way to address a message in someone
+    else's thread. Re-rating the same turn updates the existing row.
+    """
+    conversation = _load_conversation(db, record, conversation_id)
+    message = db.get(Message, payload.message_id)
+    if (
+        message is None
+        or message.conversation_id != conversation.id
+        or message.role != "assistant"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Feedback applies to an assistant message in this conversation.",
+        )
+
+    row = db.scalar(
+        select(ConversationFeedback).where(ConversationFeedback.message_id == message.id)
+    )
+    if row is None:
+        row = ConversationFeedback(conversation_id=conversation.id, message_id=message.id)
+        db.add(row)
+    row.rating = payload.rating
+    reason = (payload.reason or "").strip()
+    # An up-vote has no complaint to carry, and keeping a stale reason after a
+    # patient changes their mind would put words in their mouth.
+    row.reason = reason[:500] if payload.rating == "down" and reason else None
+    db.commit()
+    return ChatFeedbackResponse(
+        ok=True,
+        rating=payload.rating,
+        message="Thanks, that helps the front desk improve.",
     )
 
 

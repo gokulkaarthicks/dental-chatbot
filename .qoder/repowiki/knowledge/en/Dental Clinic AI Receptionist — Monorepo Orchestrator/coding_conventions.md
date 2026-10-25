@@ -1,0 +1,2 @@
+- Developer workflows go through `make` targets rather than invoking docker compose directly, so service names, ports, and compose files stay in one place.
+- Pre-push quality checks are defined once in `scripts/check-before-push.sh` and consumed by both `make check` and the git pre-push hook, ensuring identical lint+test behavior locally and on push.

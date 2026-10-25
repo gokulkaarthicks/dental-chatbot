@@ -9,7 +9,7 @@
 #   backend   uvicorn --reload over a bind-mounted ./backend
 #   frontend  the Vite dev server on :5173, proxying /api to the backend
 #
-# Only the *first* start builds — and only to install dependencies. After that,
+# Only the *first* start builds, and only to install dependencies. After that,
 # Python and TSX edits are picked up on save.
 #
 # The base topology is kept deliberately: images, bind mount of the data volume,

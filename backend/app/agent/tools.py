@@ -615,12 +615,87 @@ def openai_tool_schemas() -> list[dict[str, Any]]:
 
 
 def _truncate(payload: dict[str, Any]) -> dict[str, Any]:
+    """Bound a tool result without ever discarding its interactive cards.
+
+    Availability cards are the patient-facing half of a search: dropping them
+    leaves the assistant saying "here are the times" above nothing. When a
+    result is too large, keep the decision fields and the cards, and remove only
+    secondary detail (long appointment lists, provider catalogues, notes) until
+    it fits. A last-resort marker is still better than an unbounded payload.
+    """
     encoded = json.dumps(payload, default=str)
     if len(encoded) <= MAX_TOOL_RESULT_CHARS:
         return payload
+
+    # Fields the conversation loop and the UI act on. Everything else is
+    # optional detail and is dropped first.
+    keep = {
+        "ok",
+        "error",
+        "message",
+        "note",
+        "next_step",
+        "truncated",
+        "cards",
+        "available",
+        "available_slots",
+        "slot_count",
+        "days",
+        "appointment_id",
+        "appointment_ids",
+        "target_appointment_id",
+        "appointment_unchanged",
+        "proposal_id",
+        "kind",
+        "intent",
+        "confirmed",
+        "replayed",
+        "released_appointment_ids",
+        "proposal_stale",
+        "pending_proposal_id",
+        "upcoming_count",
+        "first_name",
+        "patient_first_name",
+        "verified",
+        "registration_complete",
+        "field_errors",
+        "missing_fields",
+        "requires_registration",
+        "needs_clarification",
+        "ambiguous",
+        "rejected",
+        "life_threatening",
+        "must_say",
+        "blocked",
+        "contact_required",
+        "worsening",
+        "household",
+        "people",
+        "desired_slot_count",
+        "already_booked",
+        "pending_booking",
+        "pending_reschedule",
+        "plan_count",
+        "availability_checked",
+        "searched_from",
+        "searched_through",
+    }
+    slim = {key: value for key, value in payload.items() if key in keep}
+    cards = slim.get("cards")
+    if isinstance(cards, list) and len(cards) > 12:
+        # One grid is a choice, not an archive. Twelve clickable times still
+        # leave plenty of options after the first is taken.
+        slim["cards"] = cards[:12]
+    if "appointments" in payload and isinstance(payload["appointments"], list):
+        slim["appointments"] = payload["appointments"][:8]
+    slim["truncated"] = True
+    if len(json.dumps(slim, default=str)) <= MAX_TOOL_RESULT_CHARS * 2:
+        return slim
     return {
         "ok": payload.get("ok", True),
         "truncated": True,
+        "message": payload.get("message"),
+        "cards": payload.get("cards")[:6] if isinstance(payload.get("cards"), list) else [],
         "note": "Result trimmed for size. Ask a narrower question if you need more.",
     }
 

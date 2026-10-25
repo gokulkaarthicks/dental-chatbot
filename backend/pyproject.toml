@@ -23,7 +23,7 @@ ignore = [
 # ``tests`` is on the path for the bare ``from conftest import ...`` in the
 # search/settled-grid modules; ``.`` keeps ``app`` importable.
 # ``importlib`` mode loads each file under its real dotted name, so
-# ``from tests.test_reschedule_workflow import ...`` resolves too — the default
+# ``from tests.test_reschedule_workflow import ...`` resolves too; the default
 # prepend mode imports test modules as top-level names and breaks that.
 pythonpath = [".", "tests"]
 testpaths = ["tests"]

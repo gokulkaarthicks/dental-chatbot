@@ -1,0 +1,5 @@
+- Each section component calls `useStaffQuery(key, loader)` with a stable string key to drive fetching, error display, and reload behavior.
+- Mutations go through `useStaffMutation`, which surfaces `{ pending, error, clearError, run }` and broadcasts success via `notifyStaffDataChanged` rather than throwing.
+- Errors are surfaced to the user through shared `ErrorState` / `EmptyState` / `SkeletonRows` components from `StaffUi.tsx` instead of inline try/catch blocks.
+- Navigation between views is done by updating local state plus the URL hash (`#/{view}`) rather than using a routing library.
+- Authentication state is read from `useStaffAuth()` and the session is refreshed on tab focus to detect expired or revoked sessions immediately.

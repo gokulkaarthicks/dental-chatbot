@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import (
@@ -124,3 +124,34 @@ class Message(Base):
 
     def role_is_valid(self) -> bool:
         return self.role in {role.value for role in MessageRole}
+
+
+class ConversationFeedback(Base, TimestampMixin):
+    """One patient rating of one assistant turn.
+
+    This is the feedback loop: a thumbs-down is a triage signal for the front
+    desk, paired with the stored transcript. ``reason`` is optional because a
+    patient should never have to write an essay to leave, but when they do, it
+    is the most useful line in the row.
+
+    One row per message: re-rating updates the existing row instead of stacking
+    contradictory signals on the same turn.
+    """
+
+    __tablename__ = "conversation_feedback"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    message_id: Mapped[int] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    rating: Mapped[str] = mapped_column(String(8), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("message_id", name="uq_feedback_message"),
+        Index("ix_feedback_conversation", "conversation_id"),
+        Index("ix_feedback_created", "created_at"),
+    )

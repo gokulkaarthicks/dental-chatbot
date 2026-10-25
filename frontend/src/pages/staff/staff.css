@@ -4,7 +4,7 @@
  * tokens in global.css: one neutral ramp, one accent, 4px spacing scale, three
  * radii. The layout is a fixed 232px rail plus a fluid main column with a
  * 1200px measure, and every card is a white panel with a single hairline border
- * — no shadows on static surfaces.
+ * and no shadows on static surfaces.
  */
 
 .sd-shell {
@@ -255,6 +255,15 @@
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   overflow: hidden;
+}
+
+.sd-stats--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.sd-feedback__reason {
+  color: var(--text-secondary);
+  font-style: italic;
 }
 
 .sd-stat {

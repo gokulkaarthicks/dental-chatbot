@@ -1,0 +1,1 @@
+FastAPI `APIRouter` with Pydantic request/response models, Starlette `run_in_threadpool` for blocking I/O, SQLAlchemy ORM sessions injected via `Depends(get_db)`.

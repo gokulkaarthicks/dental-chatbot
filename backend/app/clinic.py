@@ -205,6 +205,17 @@ PRACTICE_POLICIES: tuple[PracticePolicy, ...] = (
         keywords=("self pay", "no insurance", "cash", "out of pocket"),
     ),
     PracticePolicy(
+        topic="membership_plan",
+        question="Do you offer a membership or financing plan without insurance?",
+        answer=(
+            "Yes. Our in-house membership is $29 a month and includes two cleanings and two "
+            "checkups a year plus 15% off other treatment. We also offer third-party financing "
+            "for larger plans, subject to approval. The front desk confirms the current terms "
+            "before you enroll."
+        ),
+        keywords=("membership", "financing", "payment plan", "no insurance", "monthly"),
+    ),
+    PracticePolicy(
         topic="payment_methods",
         question="What payment methods do you take?",
         answer=(

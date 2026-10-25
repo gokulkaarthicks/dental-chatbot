@@ -1,0 +1,167 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: en-US
+branch: master
+nodes_managed: true
+exported_at: "2026-10-26T05:01:00Z"
+modules:
+    "":
+        dir_name: Dental Clinic AI Receptionist — Monorepo Orchestrator
+        title: Dental Clinic AI Receptionist — Monorepo Orchestrator
+        scope:
+            - README.md
+            - .gitignore
+            - Makefile
+            - docker-compose.yml
+            - docker-compose.dev.yml
+            - scripts/
+            - .env.example
+        source_files: []
+        children:
+            - backend
+            - frontend
+        depends_on: []
+        related_to: []
+    backend:
+        dir_name: Dental Clinic AI Receptionist Backend
+        title: Dental Clinic AI Receptionist Backend
+        scope:
+            - backend/
+        source_files: []
+        children:
+            - backend/agent_orchestration
+            - backend/api_routes
+            - backend/bootstrap_cli
+            - backend/business_services
+            - backend/data_models
+            - backend/tests
+        depends_on: []
+        related_to: []
+    backend/agent_orchestration:
+        dir_name: Patient Conversation Agent & DeepSeek Orchestration
+        title: Patient Conversation Agent & DeepSeek Orchestration
+        scope:
+            - backend/app/agent/
+            - backend/app/ai/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: backend/api_routes
+    backend/api_routes:
+        dir_name: FastAPI HTTP Route Layer
+        title: FastAPI HTTP Route Layer
+        scope:
+            - backend/app/api/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: backend/agent_orchestration
+            - path: backend/business_services
+            - path: frontend/patient_chat_flow
+            - path: frontend/shared_runtime
+            - path: frontend/staff_dashboard
+    backend/bootstrap_cli:
+        dir_name: Application Bootstrap, CLI & Server Entrypoints
+        title: Application Bootstrap, CLI & Server Entrypoints
+        scope:
+            - backend/app/main.py
+            - backend/app/bootstrap.py
+            - backend/app/cli.py
+            - backend/app/config.py
+            - backend/app/db.py
+            - backend/app/migrations.py
+            - backend/app/seed_fixtures.py
+            - backend/server.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    backend/business_services:
+        dir_name: Clinic Business Services Layer
+        title: Clinic Business Services Layer
+        scope:
+            - backend/app/services/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: backend/api_routes
+            - path: backend/data_models
+    backend/data_models:
+        dir_name: SQLAlchemy Domain Models & Schema Registry
+        title: SQLAlchemy Domain Models & Schema Registry
+        scope:
+            - backend/app/models/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: backend/business_services
+    backend/tests:
+        dir_name: Backend Integration & Regression Test Suite
+        title: Backend Integration & Regression Test Suite
+        scope:
+            - backend/tests/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend:
+        dir_name: Frontend Demo App (Vite + React)
+        title: Frontend Demo App (Vite + React)
+        scope:
+            - frontend/
+        source_files: []
+        children:
+            - frontend/patient_chat_flow
+            - frontend/reusable_components
+            - frontend/shared_runtime
+            - frontend/staff_dashboard
+        depends_on: []
+        related_to: []
+    frontend/patient_chat_flow:
+        dir_name: Patient Front-Desk Chat Flow
+        title: Patient Front-Desk Chat Flow
+        scope:
+            - frontend/src/pages/ChatPage.tsx
+            - frontend/src/components/chat/
+            - frontend/src/hooks/useChat.ts
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: backend/api_routes
+    frontend/reusable_components:
+        dir_name: Reusable UI Components & Shared Styles
+        title: Reusable UI Components & Shared Styles
+        scope:
+            - frontend/src/components/
+            - frontend/src/styles/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend/shared_runtime:
+        dir_name: Shared Runtime API Clients, React Hooks & Session Store
+        title: 'Shared Runtime: API Clients, React Hooks & Session Store'
+        scope:
+            - frontend/src/api/
+            - frontend/src/hooks/
+            - frontend/src/lib/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: backend/api_routes
+    frontend/staff_dashboard:
+        dir_name: Staff Dashboard (Clinic Reception UI)
+        title: Staff Dashboard (Clinic Reception UI)
+        scope:
+            - frontend/src/pages/staff/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: backend/api_routes

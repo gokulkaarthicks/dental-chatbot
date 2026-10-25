@@ -276,7 +276,7 @@ def slot_card(
         "time": option.starts_at.strftime("%-I:%M %p"),
         "end_time": option.ends_at.strftime("%-I:%M %p"),
         "time_range": (
-            f"{option.starts_at.strftime('%-I:%M %p')} – {option.ends_at.strftime('%-I:%M %p')}"
+            f"{option.starts_at.strftime('%-I:%M %p')} - {option.ends_at.strftime('%-I:%M %p')}"
         ),
         "provider": option.provider_name,
         "provider_credentials": option.provider_credentials,
@@ -522,9 +522,9 @@ def find_availability(
                     available=False,
                     needs_family_member=True,
                     message=(
-                        f"I can only book you and the children on your account, so I can't add "
-                        f"{group_first_name} here. They'd need to call us, or tell me if this is "
-                        "just for you."
+                        f"I can only book you and the other people on your household "
+                        f"account, so I can't add {group_first_name} here. They'd need to call "
+                        "us, or tell me if this is just for you."
                     ),
                 ),
                 [],
@@ -657,7 +657,7 @@ def find_availability(
     # visit); hiding it would leave the patient with nothing to pick.
     # One request books once. A booking already held *or* confirmed makes every
     # other time in that request context: the grid must not offer a second hold
-    # for the same visit. A hold counts even though nothing is booked yet —
+    # for the same visit. A hold counts even though nothing is booked yet;
     # otherwise the grid stays fully clickable after the patient has picked a
     # time and moved on, which is exactly the "old slot cards stay live" bug.
     # An explicit request for a separate visit still gets clickable times.
@@ -2346,33 +2346,28 @@ def check_family_authorisation(
 ) -> tuple[list[Patient], dict[str, Any] | None]:
     """Patients this session may book for.
 
-    A verified adult may book for themselves and for *minors* in their household.
-    Another adult's records (their appointments, history, insurance) are never
-    exposed: the household link alone is not consent.
+    A verified patient may book for themselves and for anyone else in their
+    linked household, including a spouse. This grants *booking* access only:
+    another adult's appointments, history, and insurance are never listed in
+    this conversation, because those need that adult's own verification.
     """
     from app.models import FamilyMember
-    from app.timeutil import clinic_today
 
     memberships = session.scalars(
         select(FamilyMember).where(FamilyMember.patient_id == requester.patient.id)
     ).all()
     allowed: list[Patient] = []
-    children: list[Patient] = []
-    today = clinic_today()
+    seen: set[int] = set()
     for membership in memberships:
         siblings = session.scalars(
             select(FamilyMember).where(FamilyMember.family_group_id == membership.family_group_id)
         ).all()
         for sibling in siblings:
             other = session.get(Patient, sibling.patient_id)
-            if other is None or other.id == requester.patient.id:
+            if other is None or other.id == requester.patient.id or other.id in seen:
                 continue
-            age = today.year - other.date_of_birth.year - (
-                (today.month, today.day) < (other.date_of_birth.month, other.date_of_birth.day)
-            )
-            if age < 18:
-                children.append(other)
-                allowed.append(other)
+            seen.add(other.id)
+            allowed.append(other)
     return allowed, None
 
 
@@ -2655,8 +2650,8 @@ def _family_requests(
                 _fail(
                     "not_authorized",
                     (
-                        "I can only book for you and the children on your account. "
-                        "Another adult needs to contact us themselves."
+                        "I can only book for you and the other people on your household "
+                        "account. Someone outside the household needs to contact us themselves."
                     ),
                 ),
             )

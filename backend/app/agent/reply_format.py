@@ -4,7 +4,7 @@ The model is told not to enumerate times, but a prompt is a request, not a
 guarantee. This module is the deterministic half of that rule:
 
 * when a turn returns structured slot cards, any line of prose that reads like a
-  time list ("1. 9:00 AM – 9:30 AM with Dr. Bell") is removed, and the intro is
+  time list ("1. 9:00 AM - 9:30 AM with Dr. Bell") is removed, and the intro is
   reduced to one short sentence;
 * when the model only echoed the slots and left no usable intro, a concise
   deterministic intro is written from the cards themselves;
@@ -21,9 +21,9 @@ import re
 from datetime import date, datetime
 from typing import Any
 
-# "9:00 AM", "9:00am", "9:00", optionally followed by a range ("– 9:30 AM")
+# "9:00 AM", "9:00am", "9:00", optionally followed by a range ("- 9:30 AM")
 CLOCK = re.compile(
-    r"\b\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?(?:\s*(?:-|–|—|to|until)\s*"
+    r"\b\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?(?:\s*(?:-|\u2013|\u2014|to|until)\s*"
     r"\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?)?\b",
     re.IGNORECASE,
 )
@@ -56,7 +56,7 @@ MAX_INTRO_CHARS = 240
 # After sentence-ending punctuation and a space, a lowercase word is raised.
 # Digits, quotes, and capitals are left alone.
 SENTENCE_START = re.compile(r"([.?!]\s+)([a-z])")
-# "9:00 AM – 9:30 AM": the dash joins two clock times, never two sentences.
+# "9:00 AM - 9:30 AM": the dash joins two clock times, never two sentences.
 CLOCK_RANGE = re.compile(
     r"(?<=\d)(\s*[ap]\.?m\.?)?\s*[\u2014\u2013]+\s*", re.IGNORECASE
 )
@@ -65,9 +65,9 @@ CLOCK_RANGE = re.compile(
 # instruction alone is a request, so the output is normalised deterministically.
 _DASH = "\u2014\u2013"
 _DASH_RANGE = re.compile(rf"(?<=\d)\s*[{_DASH}]+\s*(?=\d)")
-# An em dash joining clauses reads as a sentence break: "held — nothing" ->
-# "held. Nothing". Some writers put a conjunction right after the dash, which
-# must go with it ("held — and nothing" -> "held. Nothing").
+# An em dash joining clauses reads as a sentence break, so the dash becomes a
+# period. Some writers put a conjunction right after the dash, and it must go
+# with the dash rather than opening the next sentence.
 _DASH_BREAK = re.compile(
     rf"\s*[{_DASH}]+\s*(?:(?:and|but|so|then|yet)\s+)?",
     re.IGNORECASE,
@@ -226,7 +226,7 @@ def _is_time_echo(line: str) -> bool:
     """A line that mainly restates an appointment time the cards already show.
 
     A line is an echo when it *starts* with a time ("9:00 AM with Dr. Bell",
-    "9:00 AM – 9:30 AM") or is a list entry carrying one ("1. 9:00 AM ...",
+    "9:00 AM - 9:30 AM") or is a list entry carrying one ("1. 9:00 AM ...",
     "- 9:30 AM with Dr. Bell"). A sentence that merely mentions a time in
     passing ("I can't do 9:00 AM, but 10:00 works") is conversation and stays.
     """
@@ -261,7 +261,7 @@ def _trim_to_sentence(text: str) -> str:
 def strip_dashes(text: str) -> str:
     """Remove em and en dashes from patient-facing prose.
 
-    The clinic writes plain sentences: no "—" and no "–". This is the last
+    The clinic writes plain sentences, with no em or en dashes. This is the last
     defence before text is shown, so a model that ignores the style rule cannot
     put one on screen. It only rewrites the two dash characters (and the spaces
     around them); every other character is left exactly as written.
@@ -282,9 +282,9 @@ def strip_dashes(text: str) -> str:
         lambda match: f"{match.group(1) or ''} - ", normalised
     )
     normalised = _DASH_BREAK.sub(_break, normalised)
-    # A new sentence starts with a capital ("held — nothing" -> "held.
-    # Nothing"). Words the text already capitalises (names, "Dr.") are left
-    # exactly as written.
+    # A new sentence starts with a capital: the first word after a dash is
+    # raised. Words the text already capitalises (names, "Dr.") are left exactly
+    # as written.
     normalised = SENTENCE_START.sub(
         lambda match: match.group(1) + match.group(2).upper(), normalised
     )
@@ -342,8 +342,8 @@ def format_assistant_text(
 
     prose = " ".join(kept).strip()
     # Never leave a dangling lead-in like "Here are the options:".
-    if prose.endswith((":", "—", "-", ",")):
-        prose = prose.rstrip(":—-, ")
+    if prose.endswith((":", "\u2014", "-", ",")):
+        prose = prose.rstrip(":\u2014-, ")
 
     if prose and not any(
         word in prose.lower() for word in ("here", "these", "below", "option", "available")

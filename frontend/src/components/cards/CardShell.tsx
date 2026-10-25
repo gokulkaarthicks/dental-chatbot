@@ -7,7 +7,7 @@ export type CardTone = "slots" | "pending" | "confirmed" | "neutral" | "urgent";
  *
  * Cards look like a desk form, not a chat ornament: white surface, one hairline
  * border, a small state label in the header, and actions in a tinted footer.
- * Tone is communicated by the label and a single status dot — never by a glow
+ * Tone is communicated by the label and a single status dot, never by a glow
  * or an accent bar.
  */
 export function CardShell({

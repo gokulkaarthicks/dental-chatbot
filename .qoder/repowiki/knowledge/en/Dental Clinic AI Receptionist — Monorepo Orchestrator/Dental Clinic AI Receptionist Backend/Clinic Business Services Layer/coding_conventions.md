@@ -1,0 +1,6 @@
+- Mutations are wrapped in `with write_transaction(session) as txn:` blocks that commit explicitly, catching `WriteTransactionError` and translating it into a user-facing domain error.
+- State-machine transitions are declared as top-level `frozenset`/dict constants (e.g. `APPROVAL_REQUEST_TYPES`, `ALERT_TRANSITIONS`, `REQUEST_TRANSITIONS`) and validated against them at runtime rather than hard-coded in branches.
+- Public APIs accept structured inputs via `@dataclass` filter/value objects (e.g. `AlertFilters`, `RequestFilters`, `ResolvedPreferences`, `FamilyMemberRequest`) instead of loose keyword arguments.
+- Business rules that affect visibility (provider specialty eligibility, emergency qualification) are isolated in dedicated modules (`provider_rules.py`) so they can be unit-tested without touching scheduling or DB state.
+- All time comparisons use clinic-local naive datetimes obtained via `clinic_now()` / `clinic_today()`, never relying on server timezone-aware values.
+- Every module exposes its public surface through an explicit `__all__` list at the bottom of the file.

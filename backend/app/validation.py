@@ -91,7 +91,7 @@ def phone_digits(value: str | None) -> str:
 # --------------------------------------------------------------------------- #
 
 _NUMERIC_DATE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # ISO: 1984-03-12 / 1984/03/12. Not anchored — matched first so a value like
+    # ISO: 1984-03-12 / 1984/03/12. Not anchored; matched first so a value like
     # "1984-03-12" is read year-first regardless of separators.
     (re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$"), "ymd"),
     # US: 03/12/1984, 3-12-84. Only tried when the first component cannot be a
@@ -175,7 +175,7 @@ def parse_date_of_birth(raw: str | None, *, today: date | None = None) -> DateRe
             month, day = first, second
             if month > 12:
                 # First component can't be a month. If the second can be, the
-                # caller probably wrote DD/MM — accept it, but flag it so the
+                # caller probably wrote DD/MM; accept it, but flag it so the
                 # assistant confirms (identity matching keys on the exact DOB).
                 if day <= 12:
                     parsed = (year, day, month)

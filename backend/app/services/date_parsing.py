@@ -189,7 +189,7 @@ def resolve_time_window(raw: str) -> TimeWindow | None:
         return None
 
     between = re.fullmatch(
-        r"(?:between\s+)?([\w: ]+?)\s*(?:and|to|until|-|–)\s*([\w: ]+)", text
+        r"(?:between\s+)?([\w: ]+?)\s*(?:and|to|until|-|\u2013)\s*([\w: ]+)", text
     )
     if between:
         start_clock = _parse_clock(between.group(1))

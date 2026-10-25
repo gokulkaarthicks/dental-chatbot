@@ -1,0 +1,13 @@
+schema_version: 1
+module_path: backend/api_routes
+title: FastAPI HTTP Route Layer
+scope:
+    - backend/app/api/
+source_files: []
+depends_on: []
+related_to:
+    - path: backend/agent_orchestration
+    - path: backend/business_services
+    - path: frontend/patient_chat_flow
+    - path: frontend/shared_runtime
+    - path: frontend/staff_dashboard

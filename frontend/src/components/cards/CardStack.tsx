@@ -22,6 +22,8 @@ export type CardHandlers = {
    * reports as pending renders as history, never as a button.
    */
   isProposalEnabled?: (card: ProposalCard) => boolean;
+  /** Whether this message's offered grids are history after a settled action. */
+  isGridSettled?: (messageKey?: string) => boolean;
 };
 
 /**
@@ -31,7 +33,15 @@ export type CardHandlers = {
  * slot, but a patient should see one panel of choices. Every other card renders
  * individually and in server order.
  */
-export function CardStack({ cards, handlers }: { cards: ChatCard[]; handlers: CardHandlers }) {
+export function CardStack({
+  cards,
+  handlers,
+  messageKey,
+}: {
+  cards: ChatCard[];
+  handlers: CardHandlers;
+  messageKey?: string;
+}) {
   const slots = cards.filter((card): card is SlotCard => card.type === "slot");
   const others = cards.filter((card) => card.type !== "slot");
 
@@ -44,6 +54,7 @@ export function CardStack({ cards, handlers }: { cards: ChatCard[]; handlers: Ca
           busySlotId={handlers.busySlotId}
           disabled={handlers.disabled}
           isEnabled={handlers.isSlotEnabled}
+          messageKey={messageKey}
         />
       )}
 
@@ -74,7 +85,7 @@ export function CardStack({ cards, handlers }: { cards: ChatCard[]; handlers: Ca
                 key={key}
                 card={card}
                 onRequest={handlers.onHoldFamily}
-                disabled={handlers.disabled || Boolean(card.settled)}
+                disabled={handlers.disabled || Boolean(card.settled) || Boolean(handlers.isGridSettled?.(messageKey))}
               />
             );
           case "handoff":

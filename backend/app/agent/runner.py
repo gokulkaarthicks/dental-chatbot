@@ -257,6 +257,10 @@ def run_turn(
                             message.content = reply
                             session.flush()
                             break
+        reply, noticed = _ensure_emergency_notice(reply, cards)
+        if noticed:
+            _replace_last_assistant_text(session, conversation, reply)
+            session.commit()
     except DeepSeekError as exc:
         # Type only: provider messages never enter the log.
         logger.warning("DeepSeek failure during turn: %s", type(exc).__name__)
@@ -321,6 +325,9 @@ def run_turn(
         # A grid this request has already held or booked is context, not an
         # offer, however it was produced.
         cards = scheduling.settle_superseded_grids(session, conversation.id, cards)
+        # One identity, one card: a retried tool call or a re-derived proposal
+        # must not render the same option twice.
+        cards = _dedupe_cards(cards)
         # The turn's cards belong to its text. Attaching them here, before the
         # intro is rewritten, is what makes a refresh replay the same grid: a
         # restored thread used to lose every slot card and keep only prose that
@@ -512,7 +519,7 @@ def _run_loop(
                 {"role": "tool", "tool_call_id": call.id, "content": _json(result)}
             )
         if round_cards:
-            cards = round_cards
+            cards = _merge_round_cards(cards, round_cards)
 
         stored.finished_at = utcnow()
         # Verification can happen inside a tool call, so the patient binding and
@@ -555,6 +562,79 @@ def _cards_from(result: dict) -> list[dict]:
     if not isinstance(raw, list):
         return []
     return [card for card in raw if isinstance(card, dict) and card.get("type")]
+
+
+def _ensure_emergency_notice(reply: str, cards: list[dict]) -> tuple[str, bool]:
+    """Make the staff notification explicit whenever an emergency alert exists.
+
+    The requirement is a promise the practice makes to the patient, so it is
+    enforced in code rather than left to the model: if this turn carries an
+    emergency-style handoff card and the prose does not say the front desk has
+    been told, that sentence is added.
+    """
+    has_emergency_alert = any(
+        card.get("type") == "handoff"
+        and any(
+            entry.get("type") == "alert"
+            and str(entry.get("kind", "")).lower() in {"emergency", "urgent", "urgent_callback"}
+            for entry in card.get("entries") or []
+            if isinstance(entry, dict)
+        )
+        for card in cards
+    )
+    if not has_emergency_alert:
+        return reply, False
+    lowered = (reply or "").lower()
+    acknowledged = "front desk" in lowered and any(
+        word in lowered for word in ("let", "notified", "passed", "logged", "alerted")
+    )
+    if acknowledged:
+        return reply, False
+    notice = "I've let the front desk know about the symptoms you described."
+    return (f"{notice} {reply}".strip(), True)
+
+
+def _dedupe_cards(cards: list[dict]) -> list[dict]:
+    output: list[dict] = []
+    seen: set[str] = set()
+    for card in cards:
+        identity = _card_identity(card)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        output.append(card)
+    return output
+
+
+def _merge_round_cards(existing: list[dict], fresh: list[dict]) -> list[dict]:
+    """Combine one round's cards with what the turn already showed.
+
+    A fresh availability search supersedes earlier grids (otherwise a thread
+    shows two competing sets of times). Informational cards from a later round
+    (appointments, confirmations, handoffs) must not erase the grid the patient
+    is being asked to choose from: a reschedule search followed by an
+    appointment read-back used to hide every replacement time. Merge those,
+    and de-duplicate by card identity so the same family option cannot render
+    twice.
+    """
+    offer_types = {"slot", "family_option"}
+    if any(card.get("type") in offer_types for card in fresh):
+        # A new grid supersedes older grids, but an informational card from an
+        # earlier round in the same turn (a staff handoff, a confirmation) still
+        # describes something that happened and stays with the turn.
+        informational = [card for card in existing if card.get("type") not in offer_types]
+        merged = [*fresh, *informational]
+    else:
+        merged = [*existing, *fresh]
+    output: list[dict] = []
+    seen: set[str] = set()
+    for card in merged:
+        identity = _card_identity(card)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        output.append(card)
+    return output
 
 
 def _card_identity(card: dict) -> str:

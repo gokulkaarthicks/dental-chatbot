@@ -230,7 +230,13 @@ export function useCardActions({
       const next = new Set(current);
       const messages = messagesRef.current;
       messages.forEach((message) => {
-        if (message.cards?.some((card) => card.type === "slot")) next.add(message.key);
+        if (
+          message.cards?.some(
+            (card) => card.type === "slot" || card.type === "family_option",
+          )
+        ) {
+          next.add(message.key);
+        }
       });
       return next;
     });
@@ -449,6 +455,12 @@ export function useCardActions({
       return true;
     },
     [rejectedSlots, settledMessages, staleGrid],
+  );
+
+  /** Whether a message's offered grids are history after a settled action. */
+  const isGridSettled = useCallback(
+    (messageKey?: string) => settledMessages.has(messageKey ?? ""),
+    [settledMessages],
   );
 
   /** Whether a proposal card may still be acted on. */
@@ -741,6 +753,7 @@ export function useCardActions({
     busyProposalId,
     isSlotEnabled,
     isProposalEnabled,
+    isGridSettled,
     markLiveProposals,
     trackAvailability,
     noteScheduleSearched,

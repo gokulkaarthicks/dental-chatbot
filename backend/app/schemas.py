@@ -238,6 +238,25 @@ class ChatSendMessageRequest(BaseModel):
     action: ChatFamilyOptionAction | None = None
 
 
+class ChatFeedbackRequest(BaseModel):
+    """A rating of one assistant turn.
+
+    ``reason`` is optional and only ever shown to staff; it is the useful half
+    of a thumbs-down, but requiring it would stop most patients from leaving
+    one at all.
+    """
+
+    message_id: int = Field(gt=0)
+    rating: Literal["up", "down"]
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class ChatFeedbackResponse(BaseModel):
+    ok: bool
+    rating: Literal["up", "down"]
+    message: str
+
+
 class ChatSendMessageResponse(BaseModel):
     conversation_id: str
     reply: str

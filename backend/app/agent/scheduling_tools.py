@@ -452,7 +452,7 @@ def _family_member_patients(
                 "unknown_family_member",
                 (
                     f"I don't have a {member.patient_first_name} linked to this account. "
-                    "I can only book for you and the children on your file."
+                    "I can only book for you and the other people on your household account."
                 ),
                 available_first_names=sorted(by_first_name),
             )
@@ -653,8 +653,8 @@ def _tool_create_proposal(ctx: ToolContext, args: CreateProposalArgs) -> dict[st
                 return _error(
                     "not_authorized",
                     (
-                        "I can only book for you and the children on your account. "
-                        "Another adult needs to contact us themselves."
+                        "I can only book for you and the other people on your household "
+                        "account. Someone outside the household needs to contact us themselves."
                     ),
                 )
             target_id = match.id
@@ -1239,8 +1239,9 @@ def _household_summary(
 ) -> list[dict[str, Any]]:
     """Who may be booked together, derived from the household link only.
 
-    ``bookable_here`` is false for another adult: the household link is not
-    consent, so the receptionist never offers them a time in this thread.
+    Family booking is allowed for every linked household member, including a
+    spouse. Their appointment history is still not disclosed without their own
+    verification: this list answers "who can I book", not "what do they have".
     """
     rows = ctx.session.scalars(
         select(FamilyMember).where(FamilyMember.patient_id == requester.patient.id)

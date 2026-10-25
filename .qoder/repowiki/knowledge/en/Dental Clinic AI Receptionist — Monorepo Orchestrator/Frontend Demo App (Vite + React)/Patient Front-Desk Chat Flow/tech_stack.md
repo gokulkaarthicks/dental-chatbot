@@ -1,0 +1,1 @@
+React hooks with TypeScript; lucide-react icons; Web Speech API for voice dictation via a local `useDictation` hook; REST calls through generated `chatApi`/`schedulingApi` clients; browser `sessionStorage` plus an internal `sessionStore` wrapper over SQLite for transcript persistence.

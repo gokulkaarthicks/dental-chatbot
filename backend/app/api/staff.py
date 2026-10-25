@@ -37,12 +37,15 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import CurrentStaffSession, CurrentStaffUser, DbSession
 from app.models import (
     AlertStatus,
+    Conversation,
+    ConversationFeedback,
+    Message,
     Patient,
     RequestStatus,
     StaffUser,
@@ -317,6 +320,56 @@ async def logout(response: Response, db: DbSession, record: CurrentStaffSession)
 async def summary(db: DbSession, user: CurrentStaffUser) -> dict:
     counts = await run_in_threadpool(staff_handoff_board.summary_counts, db)
     return {"counts": counts, "generated_at": utcnow().isoformat(timespec="seconds")}
+
+
+@router.get("/feedback")
+async def conversation_feedback(
+    db: DbSession,
+    user: CurrentStaffUser,
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    """Patient ratings, so staff can read the conversations that went wrong.
+
+    The transcript is already stored; this endpoint surfaces the signal that
+    says which transcripts are worth reading. Counts are for the window, the
+    list is newest first, and no session token or patient identity is included.
+    """
+    since = utcnow() - timedelta(days=days)
+    counts = dict(
+        db.execute(
+            select(ConversationFeedback.rating, func.count(ConversationFeedback.id))
+            .where(ConversationFeedback.created_at >= since)
+            .group_by(ConversationFeedback.rating)
+        ).all()
+    )
+    rows = db.execute(
+        select(ConversationFeedback, Message.content, Conversation.title)
+        .join(Message, Message.id == ConversationFeedback.message_id)
+        .join(Conversation, Conversation.id == ConversationFeedback.conversation_id)
+        .where(ConversationFeedback.created_at >= since)
+        .order_by(ConversationFeedback.created_at.desc())
+        .limit(limit)
+    ).all()
+    return {
+        "counts": {
+            "up": int(counts.get("up", 0)),
+            "down": int(counts.get("down", 0)),
+            "total": int(sum(counts.values())),
+        },
+        "window_days": days,
+        "feedback": [
+            {
+                "id": item.id,
+                "rating": item.rating,
+                "reason": item.reason,
+                "created_at": item.created_at.isoformat(),
+                "conversation_title": title,
+                "excerpt": (content or "").strip()[:320],
+            }
+            for item, content, title in rows
+        ],
+    }
 
 
 # --------------------------------------------------------------------------- #

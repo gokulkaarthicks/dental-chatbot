@@ -1,9 +1,17 @@
-import { memo } from "react";
+import { memo, useState } from "react";
+import { ThumbsDown, ThumbsUp } from "lucide-react";
 
 import type { UIMessage } from "../../hooks/useChat";
 import { reconcileTurn } from "../../lib/liveCards";
 import type { CardHandlers } from "../cards/CardStack";
 import { CardStack } from "../cards/CardStack";
+
+type FeedbackRating = "up" | "down";
+type FeedbackHandler = (
+  messageId: number,
+  rating: FeedbackRating,
+  reason?: string,
+) => Promise<boolean>;
 
 function formatTime(iso?: string | null): string {
   if (!iso) return "";
@@ -27,12 +35,29 @@ export const MessageBubble = memo(function MessageBubble({
   message,
   showTime,
   cardHandlers,
+  onFeedback,
 }: {
   message: UIMessage;
   showTime: boolean;
   cardHandlers?: CardHandlers;
+  onFeedback?: FeedbackHandler;
 }) {
   const isPatient = message.role === "patient";
+  const [feedback, setFeedback] = useState<FeedbackRating | null>(null);
+  const [askingReason, setAskingReason] = useState(false);
+  const [reason, setReason] = useState("");
+  const [sendingFeedback, setSendingFeedback] = useState(false);
+  const [feedbackError, setFeedbackError] = useState(false);
+  // Only the turn on screen is rateable: rating an old reply out of context is
+  // not a signal staff can act on.
+  const canRate =
+    !isPatient &&
+    showTime &&
+    message.id !== null &&
+    !message.pending &&
+    !message.failed &&
+    Boolean(onFeedback) &&
+    feedback === null;
   // Older rows stored a "You" prefix on patient turns; the label below already
   // names the speaker, so drop it rather than printing it twice.
   const content = isPatient ? message.content.replace(/^\s*you\s*\n+/i, "") : message.content;
@@ -63,6 +88,20 @@ export const MessageBubble = memo(function MessageBubble({
     lines = lines.filter((line) => !(timeLine.test(line) && marked.test(line)));
   }
   const isList = lines.length > 1 && lines.every((line) => /^\s*\d+[.)]\s+/.test(line));
+
+  async function sendRating(rating: FeedbackRating, note?: string) {
+    if (!onFeedback || message.id === null || sendingFeedback) return;
+    setSendingFeedback(true);
+    setFeedbackError(false);
+    const ok = await onFeedback(message.id, rating, note);
+    setSendingFeedback(false);
+    if (ok) {
+      setFeedback(rating);
+      setAskingReason(false);
+    } else {
+      setFeedbackError(true);
+    }
+  }
 
   return (
     <>
@@ -96,11 +135,82 @@ export const MessageBubble = memo(function MessageBubble({
               )}
             </div>
           )}
+
+          {canRate && !askingReason && (
+            <div className="msg__feedback">
+              <span className="msg__feedback-label">Helpful?</span>
+              <button
+                type="button"
+                className="msg__feedback-btn"
+                onClick={() => void sendRating("up")}
+                disabled={sendingFeedback}
+                aria-label="This answer was helpful"
+                title="Helpful"
+              >
+                <ThumbsUp size={14} strokeWidth={1.75} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="msg__feedback-btn"
+                onClick={() => setAskingReason(true)}
+                disabled={sendingFeedback}
+                aria-label="This answer was not helpful"
+                title="Not helpful"
+              >
+                <ThumbsDown size={14} strokeWidth={1.75} aria-hidden="true" />
+              </button>
+            </div>
+          )}
+
+          {canRate && askingReason && (
+            <form
+              className="msg__feedback-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void sendRating("down", reason.trim() || undefined);
+              }}
+            >
+              <label htmlFor={`feedback-${message.key}`} className="sr-only">
+                What could have been better?
+              </label>
+              <input
+                id={`feedback-${message.key}`}
+                className="msg__feedback-input"
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+                placeholder="What could have been better? (optional)"
+                maxLength={500}
+                autoFocus
+              />
+              <button type="submit" className="msg__feedback-send" disabled={sendingFeedback}>
+                Send
+              </button>
+              <button
+                type="button"
+                className="msg__feedback-skip"
+                onClick={() => void sendRating("down")}
+                disabled={sendingFeedback}
+              >
+                Skip
+              </button>
+            </form>
+          )}
+
+          {feedback !== null && (
+            <p className="msg__feedback-thanks" role="status">
+              Thanks, that helps the front desk.
+            </p>
+          )}
+          {feedbackError && (
+            <p className="msg__feedback-thanks" role="alert">
+              That did not send. You can try again.
+            </p>
+          )}
         </article>
       )}
       {cards.length > 0 && cardHandlers && (
         <div className="msg__cards">
-          <CardStack cards={cards} handlers={cardHandlers} />
+          <CardStack cards={cards} handlers={cardHandlers} messageKey={message.key} />
         </div>
       )}
     </>

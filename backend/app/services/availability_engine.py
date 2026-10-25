@@ -77,7 +77,7 @@ class SlotOption:
             "ends_at": self.ends_at.isoformat(timespec="minutes"),
             "day": self.day.isoformat(),
             "time": self.starts_at.strftime("%-I:%M %p"),
-            "time_range": f"{self.starts_at.strftime('%-I:%M %p')} – {self.ends_at.strftime('%-I:%M %p')}",
+            "time_range": f"{self.starts_at.strftime('%-I:%M %p')} - {self.ends_at.strftime('%-I:%M %p')}",
             "provider": self.provider_name,
             "provider_credentials": self.provider_credentials,
             "duration_minutes": self.duration_minutes,
