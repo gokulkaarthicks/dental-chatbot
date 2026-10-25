@@ -58,7 +58,7 @@ services:
   frontend:
     # The dev server, not nginx. The base image stays built and cached, so
     # flipping back to ``make up`` afterwards costs one restart, not a build.
-    image: node:20-alpine
+    image: node:20-bookworm-slim
     working_dir: /app
     environment:
       # ``npm run dev`` binds 0.0.0.0:5173 and proxies /api; the target has to be
