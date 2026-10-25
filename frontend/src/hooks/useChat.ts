@@ -47,10 +47,22 @@ function storedKey(message: ChatMessage, index: number): string {
 }
 
 function restoredToUI(messages: ChatMessage[]): UIMessage[] {
-  return messages.map((message, index) => ({
-    ...message,
-    key: storedKey(message, index),
-  }));
+  const seenProposalIds = new Set<string>();
+  return messages.map((message, index) => {
+    if (!message.cards?.length) {
+      return { ...message, key: storedKey(message, index) };
+    }
+    // A retried turn can contain the same persisted proposal more than once.
+    // Keep the newest occurrence; the transcript remains intact while one
+    // proposal cannot render as several actionable banners.
+    const cards = message.cards.filter((card) => {
+      if (!("proposal_id" in card) || card.type === "confirmation") return true;
+      if (seenProposalIds.has(card.proposal_id)) return false;
+      seenProposalIds.add(card.proposal_id);
+      return true;
+    });
+    return { ...message, key: storedKey(message, index), cards };
+  });
 }
 
 /**
@@ -531,7 +543,8 @@ export function useChat() {
         const response = await chatApi.sendMessage(token, thread, text, {
           signal: controller.signal,
         });
-        setMessages(restoredToUI(response.messages));
+        const responseMessages = restoredToUI(response.messages);
+        setMessages(markProposalsResolved(responseMessages, response.cards ?? []));
         setSession(response.session);
         // The newest turn's cards are the authoritative actionable set; the
         // re-sync refreshes the availability grid behind them.
