@@ -49,21 +49,28 @@ function storedKey(message: ChatMessage, index: number): string {
 
 function restoredToUI(messages: ChatMessage[]): UIMessage[] {
   const seenProposalIds = new Set<string>();
-  return messages.map((message, index) => {
-    if (!message.cards?.length) {
-      return { ...message, key: storedKey(message, index) };
-    }
-    // A retried turn can contain the same persisted proposal more than once.
-    // Keep the newest occurrence; the transcript remains intact while one
-    // proposal cannot render as several actionable banners.
-    const cards = message.cards.filter((card) => {
-      if (!("proposal_id" in card) || card.type === "confirmation") return true;
-      if (seenProposalIds.has(card.proposal_id)) return false;
-      seenProposalIds.add(card.proposal_id);
-      return true;
-    });
-    return { ...message, key: storedKey(message, index), cards };
-  });
+  // Walk newest to oldest so a confirmation wins over an older proposal card,
+  // and a retried/replayed card cannot render the same proposal twice.
+  return messages
+    .map((message, index) => ({ message, index }))
+    .reverse()
+    .map(({ message, index }) => {
+      if (!message.cards?.length) {
+        return { ...message, key: storedKey(message, index) };
+      }
+      const cards = message.cards
+        .slice()
+        .reverse()
+        .filter((card) => {
+          if (!("proposal_id" in card)) return true;
+          if (seenProposalIds.has(card.proposal_id)) return false;
+          seenProposalIds.add(card.proposal_id);
+          return true;
+        })
+        .reverse();
+      return { ...message, key: storedKey(message, index), cards };
+    })
+    .reverse();
 }
 
 /**

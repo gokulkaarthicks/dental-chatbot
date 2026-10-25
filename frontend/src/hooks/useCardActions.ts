@@ -262,18 +262,23 @@ export function useCardActions({
     [markLiveProposals, setMessages, settleGrids],
   );
 
-  /** Swap a resolved proposal card for whatever the server returned. */
+  /** Consolidate a proposal action result into its newest card occurrence. */
   const resolveProposalCard = useCallback(
     (proposalId: string, replacement: ChatCard[]) => {
-      setMessages((current) =>
-        current.map((message) => {
+      setMessages((current) => {
+        let placed = false;
+        return current.map((message) => {
           if (!message.cards?.some((card) => cardProposalId(card) === proposalId)) {
             return message;
           }
           const kept = message.cards.filter((card) => cardProposalId(card) !== proposalId);
-          return { ...message, cards: [...kept, ...replacement] };
-        }),
-      );
+          if (replacement.length > 0 && !placed) {
+            placed = true;
+            return { ...message, cards: [...kept, ...replacement] };
+          }
+          return { ...message, cards: kept };
+        });
+      });
     },
     [setMessages],
   );
@@ -604,7 +609,7 @@ export function useCardActions({
             result.error === "slot_taken" ||
             result.error === "busy" ||
             result.error === "booking_conflict";
-          if (result.proposal_stale) {
+          if (result.cards.length > 0) {
             resolveProposalCard(card.proposal_id, result.cards);
           }
           if (!retryable && result.error) {
