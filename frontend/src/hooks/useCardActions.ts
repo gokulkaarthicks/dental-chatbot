@@ -24,7 +24,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { schedulingApi } from "../api/client";
+import { schedulingApi, type ChatAction } from "../api/client";
 import type {
   ChatCard,
   FamilyOptionCard,
@@ -69,7 +69,7 @@ const SEARCH_PENDING = "*";
 type Options = {
   token: () => string | null;
   conversationId: string | null;
-  send: (text: string) => Promise<void>;
+  send: (text: string, options?: { action?: ChatAction }) => Promise<void>;
   setMessages: (updater: (current: UIMessageLike[]) => UIMessageLike[]) => void;
   setNotice: (notice: CardNotice | null) => void;
   /** Optional: lets the card layer pause work while a turn is in flight. */
@@ -684,15 +684,14 @@ export function useCardActions({
       const selectedTimes = card.slots
         .map((slot) => `${slot.patient_first_name ?? "patient"} at ${slot.time ?? slot.time_range}`)
         .join(", ");
+      const text = names
+        ? `Please hold the clicked family option for ${names}. The selected times are ${selectedTimes}.`
+        : `Please hold the clicked family option at ${selectedTimes}.`;
       await send(
-        names
-          ? `Please hold the clicked family option for ${names}. ` +
-            `The selected times are ${selectedTimes}. ` +
-            `The clicked card's option_identity is ${card.option_id}; pass that exact ` +
-            "option_identity to hold_family_option."
-          : `Please hold the clicked family option at ${selectedTimes}. ` +
-            `The clicked card's option_identity is ${card.option_id}; pass that exact ` +
-            "option_identity to hold_family_option.",
+        text,
+        {
+          action: { type: "family_option_click", option_identity: card.option_id },
+        },
       );
     },
     [send],

@@ -16,6 +16,7 @@ An assistant turn that only issued tool calls is replayed with
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from datetime import datetime
 from typing import Any
@@ -26,6 +27,11 @@ from sqlalchemy.orm import Session
 from app.models import Conversation, ConversationStatus, Message, PatientSession, utcnow
 
 TITLE_MAX_LENGTH = 64
+_INTERNAL_FAMILY_ACTION = re.compile(
+    r"\s*The clicked card's option_identity is [^;\n]+;\s*"
+    r"pass that exact option_identity to hold_family_option\.?",
+    re.IGNORECASE,
+)
 
 
 def new_public_id() -> str:
@@ -327,10 +333,16 @@ def to_provider_messages(messages: list[Message]) -> list[dict[str, Any]]:
 
 def public_message(message: Message) -> dict[str, Any]:
     """Client-safe projection. Never includes tool payloads or arguments."""
+    content = message.content
+    if message.role == "patient":
+        # Older card clicks put the opaque identity in the patient message.
+        # Keep the stored/provider history intact, but never replay that
+        # implementation detail to the browser.
+        content = _INTERNAL_FAMILY_ACTION.sub("", content).strip()
     payload = {
         "id": message.id,
         "role": message.role,
-        "content": message.content,
+        "content": content,
         "sequence": message.sequence,
         "created_at": message.created_at.isoformat(),
     }

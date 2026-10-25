@@ -246,6 +246,7 @@ async def send_message(
         conversation=conversation,
         patient_session=record,
         patient_text=text,
+        family_option_identity=(payload.action.option_identity if payload.action else None),
     )
 
     db.refresh(conversation)

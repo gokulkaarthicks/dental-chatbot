@@ -225,8 +225,16 @@ class ChatConversationListResponse(BaseModel):
     session: ChatSessionState
 
 
+class ChatFamilyOptionAction(BaseModel):
+    """Opaque request metadata for a family-option card click."""
+
+    type: Literal["family_option_click"]
+    option_identity: str = Field(min_length=1, max_length=512)
+
+
 class ChatSendMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
+    action: ChatFamilyOptionAction | None = None
 
 
 class ChatSendMessageResponse(BaseModel):

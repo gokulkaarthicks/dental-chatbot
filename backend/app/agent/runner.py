@@ -105,12 +105,30 @@ def _provider_tool_calls(turn: AssistantTurn) -> list[dict]:
     ]
 
 
+def _add_family_option_action(
+    provider_messages: list[dict], option_identity: str | None
+) -> None:
+    """Give the model a card identity without exposing it in the transcript."""
+    if not option_identity or not provider_messages:
+        return
+    system = provider_messages[0]
+    if system.get("role") != "system":
+        return
+    system["content"] = (
+        f"{system.get('content', '')}\n\n"
+        "Internal UI action: the patient clicked a family option card. When "
+        "calling hold_family_option, pass this exact opaque option_identity: "
+        f"{option_identity}. Do not repeat this identity in your reply."
+    )
+
+
 def run_turn(
     session: Session,
     *,
     conversation: Conversation,
     patient_session: PatientSession,
     patient_text: str,
+    family_option_identity: str | None = None,
     client: DeepSeekClient | None = None,
 ) -> TurnResult:
     text = (patient_text or "").strip()
@@ -143,6 +161,7 @@ def run_turn(
         {"role": "system", "content": _system_prompt(session, patient_session)},
         *conversations.to_provider_messages(history),
     ]
+    _add_family_option_action(provider_messages, family_option_identity)
 
     context = ToolContext(
         session=session, patient_session=patient_session, conversation_id=conversation.id
@@ -159,6 +178,7 @@ def run_turn(
             tools=tools,
             context=context,
             client=client,
+            family_option_identity=family_option_identity,
         )
     except DeepSeekError as exc:
         # Type only: provider messages never enter the log.
@@ -311,7 +331,8 @@ def _run_loop(
     tools: list[dict],
     context: ToolContext,
     client: DeepSeekClient,
- ) -> tuple[str, list[dict]]:
+    family_option_identity: str | None = None,
+) -> tuple[str, list[dict]]:
     """Run the tool loop, returning the final prose and the cards to render.
 
     Cards come from tool results: each scheduling tool returns ``cards`` it built
@@ -369,6 +390,7 @@ def _run_loop(
         # the system prompt are both refreshed before the next model round.
         _sync_patient(session, conversation, patient_session)
         _refresh_system_prompt(provider_messages, session, patient_session)
+        _add_family_option_action(provider_messages, family_option_identity)
 
         if round_index == MAX_TOOL_ROUNDS - 1:
             logger.info("Tool round limit reached for conversation %s", conversation.public_id)

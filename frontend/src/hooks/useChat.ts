@@ -28,6 +28,7 @@ import {
   api,
   chatApi,
   schedulingApi,
+  type ChatAction,
   type ChatMessage,
   type ChatSessionState,
 } from "../api/client";
@@ -153,6 +154,8 @@ export type UIMessage = ChatMessage & {
   failed?: boolean;
   cards?: ChatCard[];
 };
+
+export type SendOptions = { action?: ChatAction };
 
 /** A banner above the thread. Warnings (failed sends) outrank info notes. */
 export type ChatNotice = { text: string; level: "info" | "warning" };
@@ -514,7 +517,7 @@ export function useChat() {
   }, [bootstrap]);
 
   const send = useCallback(
-    async (rawText: string) => {
+    async (rawText: string, options: SendOptions = {}) => {
       const text = rawText.trim();
       const token = tokenRef.current;
       const thread = conversationRef.current;
@@ -542,6 +545,7 @@ export function useChat() {
       try {
         const response = await chatApi.sendMessage(token, thread, text, {
           signal: controller.signal,
+          action: options.action,
         });
         const responseMessages = restoredToUI(response.messages);
         setMessages(markProposalsResolved(responseMessages, response.cards ?? []));

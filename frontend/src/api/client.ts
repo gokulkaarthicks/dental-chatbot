@@ -203,7 +203,12 @@ export type ChatSendMessageResponse = {
   cards?: ChatCard[];
 };
 
-type ChatOptions = { signal?: AbortSignal };
+export type ChatAction = {
+  type: "family_option_click";
+  option_identity: string;
+};
+
+type ChatOptions = { signal?: AbortSignal; action?: ChatAction };
 
 function chatHeaders(token: string, json = false): Record<string, string> {
   const headers: Record<string, string> = { "X-Patient-Session": token };
@@ -261,7 +266,7 @@ export const chatApi = {
       {
         method: "POST",
         headers: chatHeaders(token, true),
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, ...(options.action ? { action: options.action } : {}) }),
         signal: options.signal,
       },
     ),
