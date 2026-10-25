@@ -81,8 +81,8 @@ The model decides how to interpret language and which allowed tool to request. I
 ## Getting started
 
 ```bash
-git clone <repository-url>
-cd dental-resonate
+git clone https://github.com/gokulkaarthicks/dental-chatbot.git
+cd dental-chatbot
 cp .env.example .env
 ```
 
@@ -156,9 +156,9 @@ Insurance, self-pay, payment, hours, location, and contact answers come from con
 
 Availability is represented as 30-minute provider slots. Appointment types consume contiguous slots. `SlotClaim` joins an appointment or proposal to each interval, and a database uniqueness constraint permits only one active claim per slot. Service checks provide useful messages; the database constraint is the load-bearing overlap protection.
 
-Proposal creation runs under `BEGIN IMMEDIATE`, revalidates intervals, and records active holds. Holds last 2 minutes (`HOLD_MINUTES`) and are released earlier whenever the patient changes their mind: a new search, or a "Change" click, hands the time back in the same turn. A hold window passing frees the interval but not the choice — the card stays confirmable, and confirmation revalidates the interval before booking it. Confirmation uses another `BEGIN IMMEDIATE`, revalidates all intervals, releases holds, creates the appointment or appointments, and marks the proposal accepted. A failure rolls back the transaction.
+Proposal creation runs under `BEGIN IMMEDIATE`, revalidates intervals, and records active holds. Holds last 2 minutes (`HOLD_MINUTES`) and are released earlier whenever the patient changes their mind: a new search, or a "Change" click, hands the time back in the same turn. When the two-minute hold expires, its slot claim is released but the pending proposal remains a record of the patient's choice; confirmation revalidates live availability and succeeds only if the slot is still open. Confirmation uses another `BEGIN IMMEDIATE`, revalidates all intervals, releases holds, creates the appointment or appointments, and marks the proposal accepted. A failure rolls back the transaction.
 
-Client create keys and confirmation keys provide idempotent retries. Replaying an accepted confirmation returns the committed result rather than creating another booking. Stale cards and expired proposals are rejected and removed from the actionable UI. A conflict cannot produce a success response.
+Client create keys and confirmation keys provide idempotent retries. Replaying an accepted confirmation returns the committed result rather than creating another booking. Stale or superseded cards, and explicitly rejected proposals, are removed from the actionable UI. An expired hold is different: its proposal may still be confirmed after a fresh availability recheck, or it reports a conflict if another booking has taken the slot. A conflict cannot produce a success response.
 
 Rescheduling is distinct from a new booking. A reschedule proposal names the verified appointment it replaces. Successful confirmation marks the original `rescheduled`, preserves its historical time and provider, and creates a new booked row linked through `rescheduled_from_id`. Old claims are released in the same transaction. A rejection, expiry, or conflict leaves the original booked. An explicitly requested additional visit does not cancel the existing appointment.
 
@@ -193,11 +193,21 @@ cd backend
 pytest
 ```
 
+The local test command requires Python 3.12, the backend dependencies from `backend/requirements.txt`, and `pytest` available in that Python environment. For example:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r backend/requirements.txt pytest ruff
+```
+
+Docker Compose can run the application without a host Python or Node installation, but the documented local test and pre-push commands use the host Python environment.
+
 
 
 ### Pre-push quality gate
 
-Every `git push` runs the same gate: **ruff auto-fix → ruff check → pytest**. If lint errors remain that ruff cannot fix, or any test fails, the push is aborted and nothing reaches the remote. Auto-fixable issues are fixed and folded into the commit being pushed, so they never block you.
+After the local hook is installed, `git push` runs the same gate: **ruff auto-fix → ruff check → pytest**. If the hook is not installed, Git does not run this repository-specific gate automatically. When installed, remaining lint errors or test failures abort the push. Auto-fixable issues are fixed and folded into the commit being pushed.
 
 Install the hook once per clone (it is not committed to `.git`):
 
@@ -214,9 +224,9 @@ make hooks      # same as: bash scripts/install-git-hooks.sh
 | `make test`  | Runs backend tests only.                                    |
 
 
-The hook needs `ruff` and `pytest` on a Python it can find (a `.venv` in the repo, or `python3`). Emergency bypass for a single push: `git push --no-verify`.
+The hook needs `ruff` and `pytest` on a Python it can find (for example, the repository `.venv` or `python3`). Emergency bypass for a single push: `git push --no-verify`.
 
-No current pass count is claimed because tests were not run for this documentation-only update. A short manual review is: register and book a patient, refresh and inspect the restored conversation, reschedule a seeded appointment and verify the original is inactive, confirm a family proposal, report an urgent symptom, and acknowledge the resulting alert from `/staff`.
+No current pass count is claimed because tests were not run for this release update. A short manual review is: register and book a patient, refresh and inspect the restored conversation, reschedule a seeded appointment and verify the original is inactive, confirm a family proposal, report an urgent symptom, and acknowledge the resulting alert from `/staff`.
 
 ## Engineering decisions and prioritization
 
