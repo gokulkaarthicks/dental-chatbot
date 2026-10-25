@@ -658,7 +658,7 @@ def _family_plan_is_non_overlapping(plan: list[SlotOption]) -> bool:
     ordered = sorted(plan, key=lambda option: option.starts_at)
     return all(
         previous.ends_at <= current.starts_at
-        for previous, current in zip(ordered, ordered[1:], strict=True)
+        for previous, current in zip(ordered, ordered[1:], strict=False)
     )
 
 
@@ -667,7 +667,7 @@ def _nearby_family_plan_score(plan: list[SlotOption]) -> tuple[Any, ...]:
     ordered = sorted(plan, key=lambda option: option.starts_at)
     gaps = [
         max(0, int((current.starts_at - previous.ends_at).total_seconds()))
-        for previous, current in zip(ordered, ordered[1:], strict=True)
+        for previous, current in zip(ordered, ordered[1:], strict=False)
     ]
     return (
         sum(gaps),
@@ -739,7 +739,7 @@ def search_nearby_family_plans(
         return []
 
     providers = load_providers(session)
-    scan_from = max(preferences.today, current.date())
+    scan_from = max(preferences.scan_bounds[0], current.date())
     last_day = min(
         preferences.scan_bounds[1],
         scan_from + timedelta(days=max(1, max_days) - 1),

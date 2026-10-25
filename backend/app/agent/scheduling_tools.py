@@ -491,6 +491,16 @@ def _tool_create_proposal(ctx: ToolContext, args: CreateProposalArgs) -> dict[st
     if problem is not None or requester is None:
         return problem or _error("not_verified", "This session isn't verified.")
 
+    if scheduling.family_followup_requires_group(ctx.session, requester):
+        return _error(
+            "family_booking_required",
+            (
+                "This request is for the verified patient and their children. "
+                "Search family availability and hold one combined option with one time per person."
+            ),
+            next_step="Call search_family_availability before holding any time.",
+        )
+
     if args.intent == "reschedule" or args.appointment_id is not None:
         if not args.slot_ids:
             return _error(
@@ -948,6 +958,16 @@ def _tool_confirm_slot_selection(
     appointment_type, type_problem = _appointment_type(ctx, args.appointment_type or "checkup")
     if type_problem is not None or appointment_type is None:
         return type_problem or _error("unknown_type", "Unknown visit type.")
+    if scheduling.family_followup_requires_group(ctx.session, requester):
+        return _error(
+            "family_booking_required",
+            (
+                "This request needs one combined family option. "
+                "Do not hold this single-person slot."
+            ),
+            next_step="Call search_family_availability and use hold_family_option.",
+            intent="new_booking",
+        )
     options = scheduling.options_for_slots(
         ctx.session,
         appointment_type=appointment_type,
@@ -1270,7 +1290,7 @@ SCHEDULING_TOOL_SPECS: tuple[ToolSpec, ...] = (
             "said them ('tomorrow', 'next tuesday', 'early next month', '2026-11-12') and let "
             "the server resolve dates. Results are real slots the patient can click; showing "
             "them books nothing. For a household booking, pass group_first_name so the cards "
-            "show one time per person, back-to-back."
+            "show one complete same-day time per person, ranked as close together as possible."
         ),
         args_model=SearchAvailabilityArgs,
         handler=_tool_search_availability,
