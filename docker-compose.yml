@@ -1,0 +1,50 @@
+# Monolithic demo: FastAPI backend + React frontend.
+#
+# The only host-side configuration is the .env file (three DeepSeek variables).
+# The API key is injected into the *backend* container only — it is never
+# passed to the frontend build or bundle.
+#
+# SQLite lives on the named volume `clinic-data`, so `docker compose down` plus
+# `docker compose up` preserves all records. Only `make reset-demo` recreates it.
+
+name: dental-receptionist
+
+services:
+  backend:
+    build:
+      context: ./backend
+    image: dental-receptionist-backend:local
+    container_name: dental-receptionist-backend
+    env_file:
+      - .env
+    volumes:
+      - clinic-data:/app/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    image: dental-receptionist-frontend:local
+    container_name: dental-receptionist-frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  clinic-data:
+    name: dental-receptionist-clinic-data

@@ -1,0 +1,6 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+SQLAlchemy==2.0.36
+pydantic==2.10.4
+# DeepSeek is called over the OpenAI-compatible HTTP API (Phase 2).
+httpx==0.28.1

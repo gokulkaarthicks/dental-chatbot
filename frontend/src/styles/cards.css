@@ -1,0 +1,400 @@
+/* Interactive cards
+ * ---------------------------------------------------------------------------
+ * Cards sit in the thread but outside a message body: they act on real
+ * database rows, so they get a raised surface, their own actions, and more
+ * width than prose. The tone dot in the header is the only colour signal and is
+ * always paired with a text label.
+ */
+
+.msg__cards {
+  align-self: stretch;
+  max-width: 100%;
+  margin-top: 2px;
+}
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  max-width: 600px;
+}
+
+.cardx {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.cardx__head {
+  padding: 12px var(--s-4) 10px;
+}
+
+.cardx__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.cardx__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-400);
+}
+
+.cardx--slots .cardx__dot,
+.cardx--pending .cardx__dot {
+  background: var(--warn-fg);
+}
+
+.cardx--confirmed .cardx__dot {
+  background: var(--ok-fg);
+}
+
+.cardx--urgent .cardx__dot {
+  background: var(--danger-fg);
+}
+
+.cardx__title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.cardx__body {
+  padding: 0 var(--s-4) 12px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.cardx__foot {
+  padding: 10px var(--s-4);
+  border-top: 1px solid var(--border-soft);
+  background: var(--c-25);
+}
+
+.cardx__hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.cardx__empty {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* Slot rows */
+
+.slots {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.slots__daylabel {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.slots__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.slots__button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr) auto auto 16px;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.slots__button:hover:not(:disabled) {
+  border-color: var(--c-300);
+  background: var(--c-25);
+}
+
+.slots__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.slots__time {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.slots__end {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.slots__dentist {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slots__meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.slots__cta {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+/* A time the server no longer offers: still readable history, never a button. */
+.slots__button--stale .slots__time {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.slots__button--stale .slots__cta {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.slots__chev {
+  color: var(--c-400);
+}
+
+/* Proposal */
+
+.proposal__items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.proposal__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px var(--s-3);
+}
+
+.proposal__who {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: var(--s-2);
+  align-items: baseline;
+}
+
+.proposal__name {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.proposal__type {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.proposal__when {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13.5px;
+}
+
+.proposal__was {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.proposal__new {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.proposal__dentist {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.proposal__summary,
+.proposal__warning {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.proposal__warning {
+  color: var(--warn-fg);
+}
+
+.proposal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.proposal__decline {
+  margin-left: auto;
+}
+
+/* Confirmations, appointments, family, handoff */
+
+.confirmed__list,
+.appointments,
+.family,
+.handoff {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.confirmed__when {
+  font-weight: 600;
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.confirmed__meta {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.appointments__row {
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+}
+
+.family__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px var(--s-3);
+  font-size: 13px;
+}
+
+.family__who {
+  font-weight: 600;
+}
+
+.family__when {
+  grid-column: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.family__dentist {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.handoff__row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.handoff__status {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--c-75);
+  border: 1px solid var(--border-soft);
+  color: var(--text-secondary);
+}
+
+.handoff__status--open,
+.handoff__status--pending {
+  background: var(--warn-bg);
+  border-color: var(--warn-bd);
+  color: var(--warn-fg);
+}
+
+.handoff__status--acknowledged,
+.handoff__status--in_progress {
+  background: var(--c-75);
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.handoff__status--resolved {
+  background: var(--ok-bg);
+  border-color: var(--ok-bd);
+  color: var(--ok-fg);
+}
+
+.handoff__kind {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.handoff__message {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .cards,
+  .msg__cards {
+    max-width: 100%;
+  }
+
+  .slots__button {
+    grid-template-columns: 100px minmax(0, 1fr) auto 14px;
+  }
+
+  .slots__meta {
+    display: none;
+  }
+
+  .proposal__item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .proposal__dentist {
+    grid-column: 1;
+    grid-row: auto;
+    text-align: left;
+  }
+}
