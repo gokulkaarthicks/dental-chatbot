@@ -95,12 +95,11 @@ TOOL_GUIDANCE = """Using your tools
   cards the patient can click. Do not repeat the times in your reply: say one short sentence
   such as "Here are the available cleaning appointments for Tuesday, October 27. Which works
   for you?" and let the cards carry the details (time, dentist, duration).
-- Household booking: when the patient asks for more than one person ("my son and me", "both of
-  us"), call get_booking_context first. Then either call search_family_availability, or
-  search_availability with group_first_name set to the second person's first name. The result is
-  one card per complete same-day plan, ranked by how close the visits are, with a time for each
-  person. Short gaps are fine; a household booking with only one time in it is wrong: never offer
-  single times for two people.
+- Household booking: when the patient asks for more than one person, call get_booking_context
+  first, then call search_family_availability with one member entry per person and each person's
+  visit type. The family tool is the only household availability path. It returns up to three
+  complete same-day plans ranked by how close the visits are. Short gaps are fine; a household
+  booking with only one time in it is wrong: never offer single times for two people.
 - Count first: get_booking_context tells you how many times the request needs (solo = 1,
   household = one per person) and whether one is already held or booked. Hold exactly that
   many, inside one card. Never hold a second booking for the same person.
@@ -167,9 +166,9 @@ TOOL_GUIDANCE = """Using your tools
   reports wrong_proposal_kind or reschedule_in_progress, read the next_step it returns and use
   the right tool instead of retrying the same call. Repeating a confirmation is safe: it
   replays the original result and never books twice.
-- Family: use search_family_availability (or search_availability with group_first_name), then
-  hold_family_option. One confirmation books everyone or nobody, and one card carries every
-  person's time. You may only include the verified patient and children on their account.
+- Family: use search_family_availability, then hold_family_option. One confirmation books
+  everyone or nobody, and one card carries every person's time. You may only include the verified
+  patient and children on their account.
   Another adult in the household needs to contact us themselves; say so plainly instead of
   offering them a time.
 - Pain or urgency: call report_emergency. If it says life_threatening, give the 911 guidance

@@ -110,79 +110,6 @@ def _type_or_error(
     return appointment_type, None
 
 
-def _conversation_is_family_followup(session: Session, requester: Requester) -> bool:
-    """Recognize the explicit child-selection follow-up without trusting the model."""
-    patient_messages = list(
-        session.scalars(
-            select(Message.content)
-            .where(
-                Message.conversation_id == requester.conversation_id,
-                Message.role == "patient",
-            )
-            .order_by(Message.sequence.desc())
-            .limit(8)
-        )
-    )
-    if not patient_messages:
-        return False
-
-    latest = patient_messages[0].strip().lower()
-    selected_both = latest in {
-        "both",
-        "both of them",
-        "both children",
-        "all",
-        "all of them",
-        "all the children",
-    }
-    if not selected_both:
-        return False
-
-    prior_text = " ".join(patient_messages[1:]).lower()
-    family_markers = ("my child", "my children", "my kid", "my son", "my daughter", "kids")
-    requester_markers = ("myself", "for me", "me and", "for us")
-    return any(marker in prior_text for marker in family_markers) and any(
-        marker in prior_text for marker in requester_markers
-    )
-
-
-def family_followup_requires_group(session: Session, requester: Requester) -> bool:
-    """Public guard for tools that could otherwise hold only one family member."""
-    return _conversation_is_family_followup(session, requester)
-
-
-def _implicit_family_requests(
-    session: Session,
-    *,
-    requester: Requester,
-    requester_type: AppointmentType,
-) -> list[FamilyMemberRequest]:
-    """Resolve a stored 'both children' answer into one atomic family request."""
-    if not _conversation_is_family_followup(session, requester):
-        return []
-
-    children, _ = check_family_authorisation(session, requester)
-    checkup, _ = resolve_appointment_type(session, "checkup")
-    if not children or checkup is None:
-        return []
-
-    return [
-        FamilyMemberRequest(
-            patient_id=requester.patient.id,
-            patient_first_name=_first_name(requester.patient),
-            appointment_type=requester_type,
-        ),
-        *[
-            FamilyMemberRequest(
-                patient_id=child.id,
-                patient_first_name=_first_name(child),
-                appointment_type=checkup,
-            )
-            for child in children
-        ],
-    ]
-
-
 def slot_card(
     option: SlotOption,
     appointment_type: AppointmentType,
@@ -423,22 +350,8 @@ def find_availability(
                 appointment_type,
             )
 
-    implicit_family_members = (
-        _implicit_family_requests(
-            session,
-            requester=requester,
-            requester_type=appointment_type,
-        )
-        if requester is not None and not group_first_name
-        else []
-    )
     target_id = patient_id if patient_id is not None else patient.id
-    target_patients = (
-        [session.get(Patient, member.patient_id) for member in implicit_family_members]
-        if implicit_family_members
-        else ([session.get(Patient, target_id)] if target_id else [])
-    )
-    targets = [p for p in target_patients if p is not None]
+    targets = [session.get(Patient, target_id)] if target_id else []
     targets = [p for p in targets if p is not None]
 
     # How many times does this request need, and does it already have one? Read
@@ -457,7 +370,7 @@ def find_availability(
         already_booked=scope.has_booked_visit,
     )
 
-    family_members: list[FamilyMemberRequest] = implicit_family_members
+    family_members: list[FamilyMemberRequest] = []
     if group_first_name:
         family_members = _family_member_requests(
             session,
@@ -2659,7 +2572,6 @@ __all__ = [
     "decline",
     "family_option_cards",
     "family_plan_identity",
-    "family_followup_requires_group",
     "family_search",
     "find_availability",
     "find_replacement_availability",

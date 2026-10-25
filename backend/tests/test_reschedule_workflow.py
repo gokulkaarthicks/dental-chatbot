@@ -49,7 +49,6 @@ from app.models import (
     Conversation,
     FamilyGroup,
     FamilyMember,
-    Message,
     Patient,
     PatientSession,
     ProposalStatus,
@@ -869,7 +868,7 @@ def test_verified_parent_can_register_and_link_a_new_minor_for_family_booking(db
     assert [patient.id for patient in allowed] == [child.id]
 
 
-def test_both_children_followup_cannot_fall_back_to_a_solo_booking(db, world_session):
+def test_runtime_family_intent_returns_three_member_options(db, world_session):
     session, world, requester = world_session
     children = [
         Patient(
@@ -909,57 +908,23 @@ def test_both_children_followup_cannot_fall_back_to_a_solo_booking(db, world_ses
             ],
         ]
     )
-    session.add_all(
-        [
-            Message(
-                conversation_id=requester.conversation.id,
-                role="patient",
-                content="I want a cleaning for myself and a checkup for my child next Saturday.",
-                sequence=1,
-                created_at=utcnow(),
-            ),
-            Message(
-                conversation_id=requester.conversation.id,
-                role="assistant",
-                content="Which child is the checkup for?",
-                sequence=2,
-                created_at=utcnow(),
-            ),
-            Message(
-                conversation_id=requester.conversation.id,
-                role="patient",
-                content="both",
-                sequence=3,
-                created_at=utcnow(),
-            ),
-        ]
-    )
     session.commit()
 
-    answer = scheduling.find_availability(
+    result = scheduling.family_search(
         session,
-        patient=world.patient,
-        appointment_type_code="cleaning",
-        start_date=ORIGINAL_DAY.isoformat(),
         requester=requester,
+        members=[
+            scheduling.FamilyMemberInput(world.patient, "cleaning"),
+            *[scheduling.FamilyMemberInput(child, "checkup") for child in children],
+        ],
+        start_date=ORIGINAL_DAY.isoformat(),
+        time_windows=["morning"],
     )
-    assert answer.payload["booking_mode"] == "family"
-    assert answer.payload["desired_slot_count"] == 3
-    assert answer.payload["cards"]
-    assert all(card["type"] == "family_option" for card in answer.payload["cards"])
-    assert all(len(card["slots"]) == 3 for card in answer.payload["cards"])
 
-    blocked = call(
-        session,
-        requester,
-        "confirm_slot_selection",
-        {
-            "slot_id": world.stable_slot(ORIGINAL_DAY, time(8, 0)),
-            "appointment_type": "cleaning",
-        },
-    )
-    assert blocked["ok"] is False
-    assert blocked["error"] == "family_booking_required"
+    assert result["available"] is True
+    assert len(result["cards"]) == 3
+    assert all(card["type"] == "family_option" for card in result["cards"])
+    assert all(len(card["slots"]) == 3 for card in result["cards"])
 
 
 def test_parent_cannot_use_child_registration_to_add_an_adult(db, world_session):

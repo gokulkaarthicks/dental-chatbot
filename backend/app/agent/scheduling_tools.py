@@ -251,7 +251,14 @@ class FamilyMemberArgs(ToolArguments):
 
 
 class FamilyAvailabilityArgs(ToolArguments):
-    members: list[FamilyMemberArgs] = Field(min_length=1, max_length=4)
+    members: list[FamilyMemberArgs] = Field(
+        min_length=1,
+        max_length=4,
+        description=(
+            "Runtime family intent: include the verified patient and every requested child, "
+            "with each person's appointment type."
+        ),
+    )
     date_phrases: list[str] = Field(default_factory=list)
     start_date: str | None = None
     time_windows: list[str] = Field(default_factory=list)
@@ -490,16 +497,6 @@ def _tool_create_proposal(ctx: ToolContext, args: CreateProposalArgs) -> dict[st
     requester, problem = _requester(ctx)
     if problem is not None or requester is None:
         return problem or _error("not_verified", "This session isn't verified.")
-
-    if scheduling.family_followup_requires_group(ctx.session, requester):
-        return _error(
-            "family_booking_required",
-            (
-                "This request is for the verified patient and their children. "
-                "Search family availability and hold one combined option with one time per person."
-            ),
-            next_step="Call search_family_availability before holding any time.",
-        )
 
     if args.intent == "reschedule" or args.appointment_id is not None:
         if not args.slot_ids:
@@ -958,16 +955,6 @@ def _tool_confirm_slot_selection(
     appointment_type, type_problem = _appointment_type(ctx, args.appointment_type or "checkup")
     if type_problem is not None or appointment_type is None:
         return type_problem or _error("unknown_type", "Unknown visit type.")
-    if scheduling.family_followup_requires_group(ctx.session, requester):
-        return _error(
-            "family_booking_required",
-            (
-                "This request needs one combined family option. "
-                "Do not hold this single-person slot."
-            ),
-            next_step="Call search_family_availability and use hold_family_option.",
-            intent="new_booking",
-        )
     options = scheduling.options_for_slots(
         ctx.session,
         appointment_type=appointment_type,
@@ -1116,9 +1103,9 @@ def _tool_get_booking_context(ctx: ToolContext, args: BookingContextArgs) -> dic
         "household": families,
         "rule": (
             "One booking covers one visit per person. A solo request needs exactly one time; "
-            "a household request needs one time for each person, back-to-back, held as a "
-            "single family option. Never hold a second booking for someone who already has "
-            "one in this thread unless they explicitly ask for an additional visit."
+            "a household request needs one time for each person, held as a single family option. "
+            "Never hold a second booking for someone who already has one in this thread unless "
+            "they explicitly ask for an additional visit."
         ),
         "cards": [],
     }
@@ -1134,8 +1121,8 @@ def _tool_get_booking_context(ctx: ToolContext, args: BookingContextArgs) -> dic
         )
     elif len(scope.covered_patient_ids) > 1:
         payload["next_step"] = (
-            "This is a household booking. Use search_family_availability or "
-            "search_availability with group_first_name so the cards show one time per person."
+            "This is a household booking. Use search_family_availability with one member entry "
+            "per requested person so the cards show one time per person."
         )
     else:
         payload["next_step"] = (
@@ -1289,8 +1276,9 @@ SCHEDULING_TOOL_SPECS: tuple[ToolSpec, ...] = (
             "Find genuinely open appointment times. Pass date phrases exactly as the patient "
             "said them ('tomorrow', 'next tuesday', 'early next month', '2026-11-12') and let "
             "the server resolve dates. Results are real slots the patient can click; showing "
-            "them books nothing. For a household booking, pass group_first_name so the cards "
-            "show one complete same-day time per person, ranked as close together as possible."
+            "them books nothing. This tool is for solo availability. For a household booking, "
+            "call search_family_availability so the cards show one complete same-day time per "
+            "person, ranked as close together as possible."
         ),
         args_model=SearchAvailabilityArgs,
         handler=_tool_search_availability,
