@@ -1,1 +1,0 @@
-FastAPI backend that wires SQLAlchemy models, domain services, a DeepSeek-powered patient conversation agent, and HTTP routes into a single SQLite-backed clinic scheduling application.

@@ -33,7 +33,7 @@ This document explains the AI agent system that powers natural language understa
 - Enforces safety rules through prompts, context, and tool design.
 - Integrates DeepSeek with retries, timeouts, and fallback messaging when the provider is unavailable.
 
-The result is a receptionist-like assistant that can verify patients, register accounts, look up clinic policy, search availability, hold proposals, confirm bookings, reschedule existing visits, handle emergencies, and hand off to staff — all while keeping business logic deterministic and auditable.
+The result is a receptionist-like assistant that can verify patients, register accounts, look up clinic policy, search availability, hold proposals, confirm bookings, reschedule existing visits, handle emergencies, and hand off to staff -- all while keeping business logic deterministic and auditable.
 
 ## Project Structure
 The AI agent lives under `backend/app/agent`, with supporting pieces in `backend/app/ai`, `backend/app/api`, `backend/app/services`, and `backend/app/models`.

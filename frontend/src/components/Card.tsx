@@ -1,3 +1,11 @@
+/**
+ * A static titled panel: header, optional subtitle and actions, then content.
+ *
+ * Passive surface only. Anything clickable in the conversation renders as a
+ * card from `components/cards`, which carries its own state and actions; this
+ * one is for the overview page's read-only panels.
+ */
+
 import type { ReactNode } from "react";
 
 type CardProps = {

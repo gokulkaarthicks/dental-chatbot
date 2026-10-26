@@ -1,4 +1,4 @@
-# Secrets — never commit. Ship .env.example instead.
+# Secrets -- never commit. Ship .env.example instead.
 .env
 .env.*
 !.env.example

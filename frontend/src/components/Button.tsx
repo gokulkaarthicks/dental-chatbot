@@ -1,3 +1,11 @@
+/**
+ * The button primitive, and the only one in the app.
+ *
+ * Variant and size are string unions mapped onto `btn--*` modifier classes; the
+ * colours, heights, and radii behind them come from the tokens in `global.css`,
+ * never from inline styles.
+ */
+
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 type Variant = "default" | "primary" | "ghost" | "danger";

@@ -1,3 +1,13 @@
+/**
+ * The patient front desk: the whole conversation on one page.
+ *
+ * Layout is a practice-information sidebar plus the thread, with the composer
+ * pinned to the bottom. This page owns only layout and the send path; the turn
+ * lifecycle lives in `useChat`, card action routing in `useCardActions`, and
+ * card rendering in `components/cards`. Nothing here decides scheduling state:
+ * every action posts to a deterministic endpoint and waits for the answer.
+ */
+
 import { useEffect, useMemo, useRef } from "react";
 import {
   CircleDot,

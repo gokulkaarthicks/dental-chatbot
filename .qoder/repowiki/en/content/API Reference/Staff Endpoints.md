@@ -143,8 +143,8 @@ API-->>Client : {appointment}
 #### POST /api/staff/session (Login)
 - Purpose: Authenticate staff credentials and issue session cookies.
 - Request body:
-  - `username`: string, required, length 1–64.
-  - `password`: string, required, length 1–256.
+  - `username`: string, required, length 1-64.
+  - `password`: string, required, length 1-256.
 - Response:
   - `authenticated`: boolean, always true on success.
   - `user`: public staff profile object.
@@ -235,8 +235,8 @@ API-->>Client : {appointment}
 #### GET /api/staff/feedback
 - Purpose: Conversation feedback review.
 - Query parameters:
-  - `days`: integer, default 30, range 1–365.
-  - `limit`: integer, default 50, range 1–200.
+  - `days`: integer, default 30, range 1-365.
+  - `limit`: integer, default 50, range 1-200.
 - Response:
   - `counts.up`, `counts.down`, `counts.total`.
   - `window_days`.
@@ -255,7 +255,7 @@ API-->>Client : {appointment}
   - `status`: optional status filter.
   - `search`: optional text search.
   - `upcoming_only`: boolean flag.
-  - `limit`: integer, default from scheduling service, range 1–200.
+  - `limit`: integer, default from scheduling service, range 1-200.
 - Response:
   - `appointments`: array of appointment objects.
   - `providers`: provider options.
@@ -295,7 +295,7 @@ API-->>Client : {appointment}
   - `kind`: optional kind filter.
   - `severity`: optional severity filter.
   - `search`: optional text search.
-  - `limit`: integer, default from handoff board, range 1–200.
+  - `limit`: integer, default from handoff board, range 1-200.
 - Response:
   - `alerts`: array of alert objects.
   - `count`: number of returned items.
@@ -318,7 +318,7 @@ API-->>Client : {appointment}
   - `status`: optional status filter.
   - `request_type`: optional request type filter.
   - `search`: optional text search.
-  - `limit`: integer, default from handoff board, range 1–200.
+  - `limit`: integer, default from handoff board, range 1-200.
 - Response:
   - `requests`: array of request objects.
   - `count`: number of returned items.
@@ -338,7 +338,7 @@ API-->>Client : {appointment}
 #### GET /api/staff/patients/search
 - Purpose: Patient lookup for booking and patient drawer.
 - Query parameters:
-  - `q`: required search string, length 1–120.
+  - `q`: required search string, length 1-120.
 - Response:
   - `patients`: array of minimal patient references.
 

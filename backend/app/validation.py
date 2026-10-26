@@ -8,10 +8,9 @@ relay verbatim. Messages are written for a patient, not for a developer.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
-
-from app.clinic import ACCEPTED_INSURANCE_PLANS, SELF_PAY_LABEL
 
 MAX_AGE_YEARS = 120
 
@@ -330,12 +329,25 @@ class InsuranceResult:
     error: str | None = None
 
 
-def normalize_insurance(raw: str | None) -> InsuranceResult:
-    """Map free text to an accepted plan, ``Self-pay``, or ``Other plan``.
+def normalize_insurance(
+    raw: str | None,
+    *,
+    accepted_plans: Sequence[str],
+    self_pay_label: str = "Self-pay",
+) -> InsuranceResult:
+    """Map free text to one of *this clinic's* accepted plans, or a self-pay label.
 
     Unknown plans are stored under the patient's own wording rather than
     rejected: the front desk verifies coverage later, and a patient should never
     be blocked at registration because their plan is unfamiliar.
+
+    The accepted list is a parameter rather than a module constant, and required
+    rather than defaulted, on purpose. Which carriers are "recognised" is a clinic
+    fact: tenant A's patient saying "Blue Harbor" is in-network, while the same
+    words at tenant B must fall through to "other plan" so the assistant never
+    claims coverage tenant B does not have. A default would silently reintroduce
+    the single-tenant assumption every caller would inherit by forgetting the
+    argument.
     """
     if raw is None or not raw.strip():
         return InsuranceResult(
@@ -347,16 +359,16 @@ def normalize_insurance(raw: str | None) -> InsuranceResult:
     compact = re.sub(r"[^a-z]", "", lowered)
 
     if lowered in _SELF_PAY_EXACT or any(phrase in lowered for phrase in _SELF_PAY_PHRASES):
-        return InsuranceResult(True, value=SELF_PAY_LABEL, is_self_pay=True)
+        return InsuranceResult(True, value=self_pay_label, is_self_pay=True)
 
-    for plan in ACCEPTED_INSURANCE_PLANS:
-        if re.sub(r"[^a-z]", "", plan.name.lower()) == compact:
-            return InsuranceResult(True, value=plan.name)
+    for name in accepted_plans:
+        if re.sub(r"[^a-z]", "", name.lower()) == compact:
+            return InsuranceResult(True, value=name)
         # Match distinctive words ("sunnycoast", "blue harbor", "medical") without
         # requiring the patient to say "Dental PPO".
-        plan_words = [word for word in plan.name.lower().split() if word not in {"dental", "ppo"}]
+        plan_words = [word for word in name.lower().split() if word not in {"dental", "ppo"}]
         if plan_words and all(word in lowered for word in plan_words):
-            return InsuranceResult(True, value=plan.name)
+            return InsuranceResult(True, value=name)
 
     if any(word in lowered for word in _OTHER_PLAN_WORDS):
         return InsuranceResult(True, value="Other plan")

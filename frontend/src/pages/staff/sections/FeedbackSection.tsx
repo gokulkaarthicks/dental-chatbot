@@ -10,13 +10,8 @@ import { useMemo, useState } from "react";
 import { ThumbsDown, ThumbsUp } from "lucide-react";
 import { staffApi, type ConversationFeedbackRow } from "../../../api/staff";
 import { Button } from "../../../components/Button";
-import {
-  EmptyState,
-  ErrorState,
-  SkeletonRows,
-  fullTimestamp,
-  relativeTime,
-} from "../StaffUi";
+import { fullTimestamp, relativeTime } from "../../../lib/staffFormat";
+import { EmptyState, ErrorState, SkeletonRows } from "../StaffUi";
 import { useStaffQuery } from "../useStaffData";
 
 const WINDOWS = [

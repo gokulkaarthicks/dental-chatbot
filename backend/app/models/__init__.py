@@ -10,6 +10,7 @@ from app.models.base import (
     AlertStatus,
     AppointmentStatus,
     Base,
+    ClinicScoped,
     ConversationStatus,
     MessageRole,
     ProposalStatus,
@@ -17,6 +18,7 @@ from app.models.base import (
     RequestType,
     SlotStatus,
     StaffRole,
+    TenantMismatch,
     UTCDateTime,
     utcnow,
 )
@@ -33,6 +35,7 @@ from app.models.proposals import BookingGroup, BookingProposal, ProposalItem
 from app.models.scheduling import Appointment, AvailabilitySlot, SlotClaim
 from app.models.sessions import PatientSession
 from app.models.staff import PendingRequest, StaffAlert, StaffSession, StaffUser
+from app.models.tenancy import Clinic, ClinicInsurancePlan, ClinicPolicy
 
 __all__ = [
     "AlertKind",
@@ -46,6 +49,10 @@ __all__ = [
     "Base",
     "BookingGroup",
     "BookingProposal",
+    "Clinic",
+    "ClinicInsurancePlan",
+    "ClinicPolicy",
+    "ClinicScoped",
     "Conversation",
     "ConversationFeedback",
     "ConversationStatus",
@@ -70,6 +77,7 @@ __all__ = [
     "StaffRole",
     "StaffSession",
     "StaffUser",
+    "TenantMismatch",
     "UTCDateTime",
     "utcnow",
 ]

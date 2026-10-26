@@ -1,3 +1,10 @@
+/**
+ * The frame every interactive card sits in, plus the slot formatters it reuses.
+ *
+ * `CardTone` is the closed set of card states; a new tone is a visual contract,
+ * so it is added here and in `cards.css`, not spelled inline at a call site.
+ */
+
 import type { ReactNode } from "react";
 
 export type CardTone = "slots" | "pending" | "confirmed" | "neutral" | "urgent";

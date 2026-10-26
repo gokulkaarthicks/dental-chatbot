@@ -28,14 +28,21 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import AppointmentStatus, Base, SlotStatus, TimestampMixin
+from app.models.base import AppointmentStatus, Base, ClinicScoped, SlotStatus, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.patients import AppointmentType, Patient, Provider
 
 
-class AvailabilitySlot(Base):
-    """One 30-minute interval in local clinic wall-clock time."""
+class AvailabilitySlot(Base, ClinicScoped):
+    """One booking interval in this clinic's own local wall-clock time.
+
+    The interval length comes from the clinic row (``slot_minutes``), not a global
+    constant, so two clinics can run different grids. ``starts_at`` is stored in
+    each clinic's own timezone, which is why the tenant filter must be applied
+    before any comparison: an Eastern 10:00 and a Pacific 10:00 are the same naive
+    value and completely different appointments.
+    """
 
     __tablename__ = "availability_slots"
 
@@ -62,6 +69,7 @@ class AvailabilitySlot(Base):
         CheckConstraint("status IN ('available', 'occupied', 'blocked')", name="ck_slot_status"),
         Index("ix_slots_starts_at", "starts_at"),
         Index("ix_slots_provider_status_start", "provider_id", "status", "starts_at"),
+        Index("ix_slots_clinic_status_start", "clinic_id", "status", "starts_at"),
     )
 
     @property
@@ -78,7 +86,7 @@ class AvailabilitySlot(Base):
         return f"slot_{self.provider_id}_{self.starts_at.strftime('%Y%m%d%H%M')}"
 
 
-class Appointment(Base, TimestampMixin):
+class Appointment(Base, ClinicScoped, TimestampMixin):
     __tablename__ = "appointments"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -168,11 +176,13 @@ class Appointment(Base, TimestampMixin):
         ),
         Index("ix_appointments_provider_start", "provider_id", "starts_at"),
         Index("ix_appointments_patient_start", "patient_id", "starts_at"),
+        Index("ix_appointments_clinic_provider_start", "clinic_id", "provider_id", "starts_at"),
+        Index("ix_appointments_clinic_patient_start", "clinic_id", "patient_id", "starts_at"),
         Index("ix_appointments_status", "status"),
     )
 
 
-class SlotClaim(Base, TimestampMixin):
+class SlotClaim(Base, ClinicScoped, TimestampMixin):
     """Reserves one slot interval for one appointment or one proposal.
 
     ``active`` flips to false (instead of deleting the row) when an appointment
@@ -235,4 +245,5 @@ class SlotClaim(Base, TimestampMixin):
             sqlite_where=text("active = 1"),
         ),
         Index("ix_slot_claims_appointment", "appointment_id"),
+        Index("ix_slot_claims_clinic_active", "clinic_id", "active"),
     )

@@ -1,6 +1,0 @@
-- Configuration is exposed as a frozen `dataclass` (`Settings`) loaded once and cached via `@lru_cache(maxsize=1)` so callers never read env files directly.
-- Database access goes through the `session_scope()` context manager, which commits on success and rolls back on any exception before closing the session.
-- Schema evolution is additive-only: new columns are declared in `_ADDED_COLUMNS` and indexes in `_REQUIRED_INDEXES`, both checked against the live inspector before issuing DDL.
-- CLI commands are plain functions returning an integer exit code, registered in a `COMMANDS` dict keyed by subparser name and dispatched centrally in `main()`.
-- Demo fixtures are defined as frozen `dataclass` tuples at module level (PROVIDERS, PATIENTS, etc.) and bundled into a single `SEED_PLAN` instance rather than being constructed inline.
-- Error responses are normalized through FastAPI exception handlers that attach a stable `error` code string and the current `request_id` to every JSON body.

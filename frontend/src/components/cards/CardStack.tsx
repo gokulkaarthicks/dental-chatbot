@@ -1,3 +1,12 @@
+/**
+ * One message's cards: coalesced slot grids, then everything else in order.
+ *
+ * `CardHandlers` is the entire interaction contract. A card never fetches or
+ * mutates anything itself -- it calls a handler and renders whatever busy or
+ * disabled state the page hands back, so "is this still actionable?" is decided
+ * in one place rather than once per card type.
+ */
+
 import type { ChatCard, FamilyOptionCard, ProposalActions, ProposalCard, SlotCard } from "../../lib/cards";
 import { AppointmentsCardView, CancellationConfirmationCardView, ConfirmationCardView, FamilyOptionCardView, HandoffCardView } from "./StatusCards";
 import { ProposalCardView } from "./ProposalCardView";

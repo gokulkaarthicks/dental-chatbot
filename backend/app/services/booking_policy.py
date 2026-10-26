@@ -39,14 +39,20 @@ from app.models import (
     ProposalStatus,
     SlotClaim,
 )
-from app.timeutil import SLOT_MINUTES
+from app.tenancy import ClinicContext
 
 logger = logging.getLogger(__name__)
 
-# A visit and its neighbour starting at most this far apart are "back-to-back".
-# One interval of slack keeps a 30-minute visit followed immediately by the next
-# one inside the window without treating a two-hour gap as a continuous block.
-BACK_TO_BACK_TOLERANCE_MINUTES = SLOT_MINUTES
+
+def back_to_back_tolerance(clinic: ClinicContext) -> int:
+    """Minutes between a visit and its neighbour that still count as back-to-back.
+
+    One interval of slack, measured on *this* clinic's grid: at a 30-minute
+    practice a 30-minute visit followed immediately by the next one is inside the
+    window, and at a 20-minute practice the same holds at 20 minutes. A constant
+    here would make tenant B's calendar look non-contiguous to itself.
+    """
+    return clinic.config.slot_minutes
 
 
 @dataclass(frozen=True)
@@ -218,6 +224,7 @@ def _first_name(session: Session, patient_id: int) -> str:
 
 def booked_visits(
     session: Session,
+    clinic: ClinicContext,
     patients: list[Patient],
     conversation_id: int | None,
 ) -> list[VisitInForce]:
@@ -235,9 +242,11 @@ def booked_visits(
             select(Appointment)
             .join(SlotClaim, SlotClaim.appointment_id == Appointment.id)
             .where(
+                Appointment.clinic_id == clinic.clinic_id,
                 Appointment.patient_id.in_(patient_ids),
                 Appointment.status == AppointmentStatus.BOOKED.value,
                 SlotClaim.active.is_(True),
+                SlotClaim.clinic_id == clinic.clinic_id,
             )
             .distinct()
             .order_by(Appointment.starts_at)
@@ -268,6 +277,7 @@ def booked_visits(
 
 def held_booking_visits(
     session: Session,
+    clinic: ClinicContext,
     patients: list[Patient],
     conversation_id: int | None,
 ) -> list[VisitInForce]:
@@ -287,7 +297,9 @@ def held_booking_visits(
                 patient_id=item.patient_id,
                 starts_at=item.proposed_starts_at,
                 ends_at=item.proposed_starts_at
-                + timedelta(minutes=item.duration_minutes or SLOT_MINUTES),
+                + timedelta(
+                    minutes=item.duration_minutes or clinic.config.slot_minutes
+                ),
                 state="held",
                 kind="booking",
                 label="held and waiting for your confirmation",
@@ -299,6 +311,7 @@ def held_booking_visits(
 
 def booking_scope(
     session: Session,
+    clinic: ClinicContext,
     *,
     patients: list[Patient],
     conversation_id: int | None,
@@ -310,9 +323,9 @@ def booking_scope(
         # A held proposal is authoritative for who the booking is for, so a
         # correction to the household link never forgets a person already held.
         covered.update(item.patient_id for item in pending.items if item.patient_id is not None)
-    booked = booked_visits(session, patients, conversation_id)
+    booked = booked_visits(session, clinic, patients, conversation_id)
     covered.update(visit.patient_id for visit in booked)
-    held = held_booking_visits(session, patients, conversation_id)
+    held = held_booking_visits(session, clinic, patients, conversation_id)
     covered.update(visit.patient_id for visit in held)
     return BookingScope(
         covered_patient_ids=covered,
@@ -532,11 +545,11 @@ def keeps_family_shape(
 
 
 __all__ = [
-    "BACK_TO_BACK_TOLERANCE_MINUTES",
     "BookingScope",
     "HeldInterval",
     "VisitInForce",
     "already_booked_message",
+    "back_to_back_tolerance",
     "booking_scope",
     "booked_visits",
     "held_booking_visits",

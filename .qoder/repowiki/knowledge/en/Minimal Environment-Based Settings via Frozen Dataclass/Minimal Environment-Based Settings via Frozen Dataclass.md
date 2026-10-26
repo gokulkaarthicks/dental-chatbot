@@ -17,10 +17,10 @@ The backend uses a **minimal, code-first settings model** built on Python's `dat
 
 ## Key Files
 
-- `backend/app/config.py` — single source of truth for application settings
-- `.env.example` — template documenting the three supported env vars
-- `docker-compose.yml` — injects `.env` into the backend container only
-- `backend/app/main.py` — consumes settings at startup (`_log_configuration`) and wires CORS/health
+- `backend/app/config.py` -- single source of truth for application settings
+- `.env.example` -- template documenting the three supported env vars
+- `docker-compose.yml` -- injects `.env` into the backend container only
+- `backend/app/main.py` -- consumes settings at startup (`_log_configuration`) and wires CORS/health
 
 ## Architecture & Conventions
 
@@ -65,7 +65,7 @@ The DeepSeek API key is read only inside this process. The docstring states it m
 
 ## Conventions Observed
 
-- New configuration requires adding one field to the frozen `Settings` dataclass and one entry in `load_settings()` — there is no schema validation layer beyond the dataclass itself.
+- New configuration requires adding one field to the frozen `Settings` dataclass and one entry in `load_settings()` -- there is no schema validation layer beyond the dataclass itself.
 - Secrets are modeled as plain strings on `Settings`; callers access them directly (e.g. `deepseek_api_key`) rather than through a secret accessor.
 - Boolean capability flags (e.g. `deepseek_configured`) are exposed as `@property` methods instead of raw env checks scattered across modules.
 - The `.env` file lives at the repository root, not under `backend/`, because `BACKEND_DIR.parent` is used to locate it.

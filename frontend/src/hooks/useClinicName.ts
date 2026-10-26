@@ -1,3 +1,12 @@
+/**
+ * Clinic branding for both interfaces, read from `/api/clinic`.
+ *
+ * Two levels on purpose: the chat sidebar needs the full profile (hours,
+ * address, phone, insurance) while the chrome only needs the name. Both settle
+ * on the same configured answer, so neither interface can show different
+ * branding for the same clinic.
+ */
+
 import { useEffect, useState } from "react";
 
 import { api, type ClinicResponse } from "../api/client";

@@ -20,7 +20,7 @@ The repository uses a layered error-handling strategy:
 
 There is no global `try/except` per route; errors propagate up to the central handlers or are caught at the hook/component layer on the frontend.
 
-## Backend — Exception hierarchy
+## Backend -- Exception hierarchy
 
 All provider failures live in `backend/app/ai/deepseek.py` under one base class:
 
@@ -39,7 +39,7 @@ Each subclass carries a `user_message` intended for the patient-facing reply. Th
 
 Network-level `httpx.TimeoutException` / `httpx.HTTPError` are converted into `DeepSeekTimeout` / `DeepSeekUnavailable` via `raise ... from exc`, preserving the original traceback.
 
-## Backend — Authentication & authorization errors
+## Backend -- Authentication & authorization errors
 
 `backend/app/api/deps.py` raises `fastapi.HTTPException` directly from dependency callables:
 
@@ -52,7 +52,7 @@ Network-level `httpx.TimeoutException` / `httpx.HTTPError` are converted into `D
 
 These constants (`STAFF_UNAUTHORIZED_DETAIL`, `STAFF_CSRF_DETAIL`, `SESSION_INVALID_DETAIL`) are the single source of truth for those messages.
 
-## Backend — Central exception handlers
+## Backend -- Central exception handlers
 
 `app/main.py` installs all handlers inside `_install_observability`:
 
@@ -68,7 +68,7 @@ The handler map `_error_code_for_status` covers 400/401/403/404/409/422/429/503;
 
 Database error bodies deliberately omit SQL text; the comment states it so callers can refetch rather than assume success. The `OperationalError` handler also attaches `Retry-After: 2`.
 
-## Backend — Request middleware
+## Backend -- Request middleware
 
 A raw ASGI `RequestContextMiddleware` (not `BaseHTTPMiddleware`) wraps every request to:
 
@@ -78,7 +78,7 @@ A raw ASGI `RequestContextMiddleware` (not `BaseHTTPMiddleware`) wraps every req
 
 CORS is configured with `allow_credentials=False` and only `X-Patient-Session`, `X-Staff-CSRF`, and `REQUEST_ID_HEADER` allowed/exposed.
 
-## Frontend — ApiError
+## Frontend -- ApiError
 
 `frontend/src/api/client.ts` defines:
 

@@ -20,14 +20,14 @@ The project is a two-service monorepo (FastAPI backend + Vite/React frontend) or
 
 ## Key Files and Responsibilities
 
-- `Makefile` — single source of truth for developer commands: `up`, `dev`, `seed`, `reset-demo`, `rebuild`, `clean-volumes`, `lint`, `test`, `check`, `hooks`.
-- `docker-compose.yml` — production-style stack: builds both services from their per-directory Dockerfiles, exposes ports 8000 (backend) and 8080 (frontend), persists SQLite on named volume `clinic-data`, healthchecks the backend `/api/health`, and makes `frontend` depend on `backend` being healthy.
-- `docker-compose.dev.yml` — development overlay that bind-mounts `./backend/app`, `./backend/tests`, `./backend/server.py`, `./backend/pyproject.toml` read-only into the backend container and replaces its command with `uvicorn --reload --reload-dir /app/app --reload-dir /app/tests`; replaces the frontend with a Debian-based Vite dev server on port 5173 with `VITE_API_PROXY_TARGET=http://backend:8000` and `CHOKIDAR_USEPOLLING=true`.
-- `backend/Dockerfile` — multi-stage not used; single stage `python:3.12-slim`, copies `requirements.txt` then `app ./` and `server.py`, declares `/app/data` as a volume, runs `server.py`.
-- `frontend/Dockerfile` — two-stage build: `debian:bookworm-slim` build stage installs node/npm, runs `npm install` then `npm run build`; runtime stage is `nginx:1.27-alpine` serving `/app/dist` via a custom `nginx.conf`.
-- `scripts/check-before-push.sh` — shared gate script invoked by both `make check` and the git hook; runs `ruff check . --fix --quiet` then `ruff check .` then `pytest -q`.
-- `scripts/install-git-hooks.sh` — copies `scripts/pre-push` into `.git/hooks/pre-push` and makes it executable.
-- `scripts/pre-push` — the actual git hook that calls `check-before-push.sh`.
+- `Makefile` -- single source of truth for developer commands: `up`, `dev`, `seed`, `reset-demo`, `rebuild`, `clean-volumes`, `lint`, `test`, `check`, `hooks`.
+- `docker-compose.yml` -- production-style stack: builds both services from their per-directory Dockerfiles, exposes ports 8000 (backend) and 8080 (frontend), persists SQLite on named volume `clinic-data`, healthchecks the backend `/api/health`, and makes `frontend` depend on `backend` being healthy.
+- `docker-compose.dev.yml` -- development overlay that bind-mounts `./backend/app`, `./backend/tests`, `./backend/server.py`, `./backend/pyproject.toml` read-only into the backend container and replaces its command with `uvicorn --reload --reload-dir /app/app --reload-dir /app/tests`; replaces the frontend with a Debian-based Vite dev server on port 5173 with `VITE_API_PROXY_TARGET=http://backend:8000` and `CHOKIDAR_USEPOLLING=true`.
+- `backend/Dockerfile` -- multi-stage not used; single stage `python:3.12-slim`, copies `requirements.txt` then `app ./` and `server.py`, declares `/app/data` as a volume, runs `server.py`.
+- `frontend/Dockerfile` -- two-stage build: `debian:bookworm-slim` build stage installs node/npm, runs `npm install` then `npm run build`; runtime stage is `nginx:1.27-alpine` serving `/app/dist` via a custom `nginx.conf`.
+- `scripts/check-before-push.sh` -- shared gate script invoked by both `make check` and the git hook; runs `ruff check . --fix --quiet` then `ruff check .` then `pytest -q`.
+- `scripts/install-git-hooks.sh` -- copies `scripts/pre-push` into `.git/hooks/pre-push` and makes it executable.
+- `scripts/pre-push` -- the actual git hook that calls `check-before-push.sh`.
 
 ## Architecture and Conventions
 
@@ -41,7 +41,7 @@ The base `docker-compose.yml` defines production images; `docker-compose.dev.yml
 SQLite lives at `/app/data/clinic.db` inside a named volume `dental-receptionist-clinic-data`. `docker compose down` preserves it; only `make reset-demo` recreates the database (stops writers, runs `app.cli reset-demo`, restarts services). `make clean-volumes` is marked DESTRUCTIVE.
 
 ### Environment injection
-The comment in `docker-compose.yml` states the API key is injected into the *backend* container only via `env_file: .env` — it is never passed to the frontend build or bundle.
+The comment in `docker-compose.yml` states the API key is injected into the *backend* container only via `env_file: .env` -- it is never passed to the frontend build or bundle.
 
 ### Frontend proxying
 In dev mode, the frontend container sets `VITE_API_PROXY_TARGET=http://backend:8000` so the Vite dev server proxies `/api` requests to the backend service name over the compose network.

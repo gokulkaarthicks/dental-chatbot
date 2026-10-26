@@ -34,6 +34,7 @@ A fictional dental practice receptionist. Patients use a conversational React UI
 | ----------- | ------------------------------------------------------ | ----------------------------------------------------- |
 | Frontend    | React 18, TypeScript, Vite, Lucide React               | Typed client for chat, cards, and staff screens.      |
 | Backend     | Python 3.12, FastAPI, Pydantic                         | Typed APIs and deterministic workflow boundaries.     |
+| Agent       | LangGraph 1.2 (compiled StateGraph, no checkpointer)   | Bounded turn routing between model rounds and tools.  |
 | AI          | DeepSeek (OpenAI-compatible chat API)                  | Natural-language interpretation and tool selection.   |
 | Persistence | SQLite, SQLAlchemy 2 (WAL, foreign keys)               | Compact, inspectable relational store.                |
 | Runtime     | Docker Compose, nginx                                  | Reproducible backend and frontend startup.            |
@@ -46,14 +47,14 @@ The model-facing surface is small: appointment decisions stay in Python and SQLi
 flowchart TD
     P[Patient React UI] --> API[FastAPI backend]
     S[Staff React UI] --> API
-    API --> C[Conversation and session services]
+    API --> C[Agent turn graph and conversation services]
     API --> D[Scheduling, patient, emergency, and staff services]
     C --> L[DeepSeek API]
     C --> DB[(SQLite and SQLAlchemy)]
     D --> DB
 ```
 
-Both UIs are separate frontend paths that call the same FastAPI. For each message, FastAPI resolves the session token, loads the session-owned conversation, persists the message, and builds chronological history plus clinic facts and tools. DeepSeek picks a tool, Pydantic validates its arguments, a deterministic service runs, and results return to a bounded loop; the reply and structured cards are persisted and rendered by React. The model cannot assert identity, invent policy, or confirm a booking, and direct card actions call deterministic endpoints rather than the model.
+Both UIs are separate frontend paths that call the same FastAPI. For each message, FastAPI resolves the session token, loads the session-owned conversation, persists the message, and builds chronological history plus clinic facts and tools. A compiled LangGraph turn graph (ingest, model round, tools, finalize) drives the turn: DeepSeek picks a tool, Pydantic validates its arguments, a deterministic service runs, and results return to the next round under a bounded budget. The reply and structured cards are persisted and rendered by React. The model cannot assert identity, invent policy, or confirm a booking, and direct card actions call deterministic endpoints rather than the model.
 
 ## Getting started
 
@@ -96,10 +97,19 @@ Startup creates the schema and seeds an empty database: providers, patients in f
 
 SQLite lives on the named `dental-receptionist-clinic-data` volume, so a restart preserves records. `make reset-demo` deletes the database and its sidecars and invalidates old sessions, proposals, and idempotency rows. `docker compose down -v` also removes the volume.
 
+## Clinics and tenancy
+
+The demo ships more than one clinic, and the API is tenant-aware. `GET /api/clinic` lists the active clinics; every other request picks one with the `X-Clinic` header, which takes either a slug or a numeric id, and falls back to the default clinic when the header is absent.
+
+A credential outranks the header. A patient or staff token belongs to exactly one clinic, so once one is presented it *is* the tenant authority -- otherwise a leaked token could be replayed against any clinic. Presenting a token under a different clinic's header returns `403` rather than a misleading `404`.
+
+Isolation is enforced below the service layer, not by remembering to add a filter:
+`before_flush` rejects a clinic-owned row that is inserted, updated, or deleted under another clinic's session, and a `do_orm_execute` hook scopes every select to the session's tenant. Core `session.execute(delete(...))` never populates `session.deleted`, so the demo reset's admin-level wipe is deliberately outside that net and scopes itself.
+
 ## Core workflows
 
 - **Registration:** collect name, US phone, date of birth, and insurance; normalizers reject malformed or ambiguous input, and a patient is created only when required fields are valid.
-- **Booking:** the agent derives type, date window, provider, and time. Availability filters business hours, eligibility, duration, existing appointments, staff blocks, and active claims, using `America/Los_Angeles`. Slot cards create a 2-minute hold; the patient must confirm; "Change" releases the hold immediately; confirmation rechecks live availability before writing.
+- **Booking:** the agent derives type, date window, provider, and time. Availability filters business hours, eligibility, duration, existing appointments, staff blocks, and active claims, all in the clinic's own timezone (each tenant carries its own, so the demo's second clinic runs on a different clock and grid than the first). Slot cards create a 2-minute hold; the patient must confirm; "Change" releases the hold immediately; confirmation rechecks live availability before writing.
 - **Existing patients:** verify with registration identity, then list, reschedule, or cancel; ownership is checked before any change.
 - **Family:** each member is tracked independently. A verified patient may book for anyone in the same household, but others' history and insurance stay private without their own verification. One card, one atomic confirmation, rollback on conflict.
 - **Emergency:** Python triage checks symptoms first. Life-threatening indicators get immediate 911/ER guidance before registration or search; other urgent reports need a callback name and valid US phone and create a staff alert. No external notification is implemented.
@@ -180,7 +190,22 @@ Key failure modes and mitigations: double-booking and stale-card confirmations a
 
 ## Production scaling
 
-This is a single-clinic prototype. For hundreds of locations and 10,000+ daily conversations I would: move transactional data to PostgreSQL while keeping the same constraints; add clinic tenancy to every query; make timezone, hours, holidays, types, provider rules, and policies versioned config; replace demo credentials with managed identity, MFA, RBAC, and revocation; run stateless replicas with a distributed booking strategy; make alerts and retries durable background jobs; add metrics, traces, and on-call runbooks; apply per-tenant rate and cost limits; integrate EHR through idempotent adapters; and add privacy controls, staged rollout, and tested rollback. These are proposed changes, not capabilities claimed by this repository.
+This runs a handful of demo clinics on one SQLite database. Every clinic-owned
+row carries `clinic_id`, selects are scoped to the request's tenant by a
+`do_orm_execute` hook, and `before_flush` rejects a row written or deleted under
+another clinic's session. A request picks its tenant with an `X-Clinic` header
+(slug or numeric id); a real patient or staff token outranks the header, since a
+credential belongs to exactly one clinic. For hundreds of locations and 10,000+
+daily conversations I would: move transactional data to PostgreSQL while keeping
+the same constraints; harden the tenant defaults further (row-level security, not
+just the ORM hook); make timezone, hours, holidays, types, provider rules, and
+policies versioned config; replace demo credentials with managed identity, MFA,
+RBAC, and revocation; run stateless replicas with a distributed booking strategy;
+make alerts and retries durable background jobs; add metrics, traces, and
+on-call runbooks; apply per-tenant rate and cost limits; integrate EHR through
+idempotent adapters; and add privacy controls, staged rollout, and tested
+rollback. These are proposed changes, not capabilities claimed by this
+repository.
 
 ## Limitations
 
@@ -197,7 +222,7 @@ This is a single-clinic prototype. For hundreds of locations and 10,000+ daily c
 .
 ├── backend/
 │   ├── app/
-│   │   ├── agent/       # prompts, tools, scheduling tools, turn runner
+│   │   ├── agent/       # LangGraph turn graph, prompts, tool registry + domains
 │   │   ├── ai/          # DeepSeek client and provider errors
 │   │   ├── api/         # chat, scheduling, staff, health, clinic, demo routes
 │   │   ├── models/      # SQLAlchemy models and state enums
@@ -205,9 +230,11 @@ This is a single-clinic prototype. For hundreds of locations and 10,000+ daily c
 │   │   ├── cli.py       # seed, reset-demo, demo-status
 │   │   ├── db.py        # engine and SQLite pragmas
 │   │   ├── migrations.py
-│   │   └── seed_fixtures.py
+│   │   ├── seed_templates.py  # clinic facts as literals (seeding path only)
+│   │   ├── seed_fixtures.py   # providers, patients, availability, appointments
+│   │   └── seed_tenants.py    # one row plan per demo clinic
 │   ├── tests/           # backend automated tests
-│   ├── scripts/         # migration check + phase-3 smoke script
+│   ├── scripts/         # migration check + end-to-end demo script
 │   ├── pyproject.toml   # ruff + pytest configuration
 │   ├── Dockerfile
 │   └── requirements.txt
@@ -216,14 +243,30 @@ This is a single-clinic prototype. For hundreds of locations and 10,000+ daily c
 │   │   ├── api/         # typed patient and staff clients
 │   │   ├── components/  # shared UI and appointment cards
 │   │   ├── hooks/       # chat, session, reset-generation, API hooks
-│   │   └── pages/       # chat, overview, staff login, dashboard
+│   │   ├── lib/         # pure helpers: card types, live cards, clinic, staff formatting
+│   │   ├── pages/       # chat, overview, and the staff dashboard under staff/
+│   │   └── styles/      # design tokens + patient chat and card styles
 │   ├── Dockerfile
 │   └── nginx.conf
 ├── scripts/             # pre-push lint + test gate (git hooks)
 ├── Makefile
 ├── docker-compose.yml
+├── docker-compose.dev.yml
 └── .env.example
 ```
+
+The three `seed_*.py` modules sit at the `app/` root rather than in `services/`
+because they hold literal demo data, not behaviour: `seed_templates.py` (clinic
+facts), `seed_fixtures.py` (providers, patients, availability), and
+`seed_tenants.py` (the tenant plans). `services/seed.py` and
+`services/reset.py` are the code that writes them. `pyproject.toml` enforces
+the split with a banned-import rule, so request-time code cannot read the
+template literals and pin every clinic to one tenant's answers.
+
+The staff dashboard keeps its hook and stylesheet beside it
+(`pages/staff/useStaffData.ts`, `pages/staff/staff.css`) rather than in `hooks/`
+and `styles/`: both are scoped to that one surface, and `staff.css` prefixes
+every selector with `sd-` so it cannot leak into the patient chat.
 
 ## Demo video
 

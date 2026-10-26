@@ -7,7 +7,7 @@ scope:
 ---
 
 ### Oral-B Dental Care
-- Definition：The fictional San Francisco dental practice that is the subject of this demo application. All clinic data, patients, providers, policies, and contact details are seeded fixtures — not real patient records.
+- Definition：The fictional San Francisco dental practice that is the subject of this demo application. All clinic data, patients, providers, policies, and contact details are seeded fixtures -- not real patient records.
 - Aliases：the practice、clinic
 
 ### receptionist
@@ -31,11 +31,11 @@ scope:
 - Aliases：staff UI、admin dashboard
 
 ### emergency alert board
-- Definition：The staff-facing queue of life-threatening or urgent symptom reports captured by the receptionist. Staff can acknowledge and resolve alerts; no external paging/SMS/email integration exists — alerts are persisted for manual review.
+- Definition：The staff-facing queue of life-threatening or urgent symptom reports captured by the receptionist. Staff can acknowledge and resolve alerts; no external paging/SMS/email integration exists -- alerts are persisted for manual review.
 - Aliases：alerts board、emergency board
 
 ### family booking
-- Definition：A single proposal that books multiple participants (e.g., spouse/partner and children) back-to-back. Each participant has independent patient, appointment type, duration, and provider eligibility; confirmation is atomic — either all visits are booked or none, with rollback on conflict.
+- Definition：A single proposal that books multiple participants (e.g., spouse/partner and children) back-to-back. Each participant has independent patient, appointment type, duration, and provider eligibility; confirmation is atomic -- either all visits are booked or none, with rollback on conflict.
 - Aliases：family scheduling、multi-patient booking
 
 ### handoff

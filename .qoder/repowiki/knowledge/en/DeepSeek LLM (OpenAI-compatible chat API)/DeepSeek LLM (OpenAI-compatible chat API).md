@@ -14,7 +14,7 @@ scope:
 DeepSeek is the only external AI model provider used by this repository. It is configured via `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` (default `deepseek-flash`), and `DEEPSEEK_BASE_URL=https://api.deepseek.com` in `.env`.
 
 ### Role
-Provides natural-language interpretation and tool selection for the dental receptionist conversation; all scheduling, identity, authorization, and database writes remain deterministic Python/SQLite — the model cannot assert identity, invent policy, or confirm a booking directly.
+Provides natural-language interpretation and tool selection for the dental receptionist conversation; all scheduling, identity, authorization, and database writes remain deterministic Python/SQLite -- the model cannot assert identity, invent policy, or confirm a booking directly.
 
 ### Integration shape
 - Client lives in `backend/app/ai/deepseek.py` and talks to DeepSeek through its **OpenAI-compatible chat interface** (not the native DeepSeek SDK). This is the durable integration contract: swap base URL / model name without rewriting the call site.

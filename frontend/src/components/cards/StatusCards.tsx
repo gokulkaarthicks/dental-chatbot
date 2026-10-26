@@ -1,3 +1,12 @@
+/**
+ * The outcome cards: confirmed, cancelled, booked list, family options, and
+ * handoff.
+ *
+ * These report state the backend already committed rather than asking for a
+ * booking decision. The one action here is the family option's "hold this
+ * option", which creates a hold for confirmation -- it never books anything.
+ */
+
 import { Button } from "../Button";
 import { CardShell, formatSlotDay, formatSlotTime } from "./CardShell";
 import type {

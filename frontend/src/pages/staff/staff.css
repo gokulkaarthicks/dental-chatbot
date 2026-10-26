@@ -1137,15 +1137,8 @@
 
 /* States ---------------------------------------------------------------- */
 
-.sd-loading {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  padding: var(--s-4) var(--s-5);
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
+/* The spinner is used on its own by the session splash in StaffApp; tabular
+   loading uses .sd-skeleton instead. */
 .sd-loading__spinner {
   width: 14px;
   height: 14px;

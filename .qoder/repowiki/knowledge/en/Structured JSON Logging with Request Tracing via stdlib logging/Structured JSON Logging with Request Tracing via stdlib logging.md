@@ -23,13 +23,13 @@ source_files:
 
 ## Approach
 
-The backend uses Python's built-in `logging` module — no third-party logger framework (no structlog, loguru, or Sentry SDK). A custom `JsonFormatter` in `backend/app/observability.py` serializes every record as one JSON object per line and installs it on the root logger. The design goal, stated in the module docstring, is that `docker compose logs -f` output stays greppable by hand and parseable by a downstream log collector without adding an external dependency.
+The backend uses Python's built-in `logging` module -- no third-party logger framework (no structlog, loguru, or Sentry SDK). A custom `JsonFormatter` in `backend/app/observability.py` serializes every record as one JSON object per line and installs it on the root logger. The design goal, stated in the module docstring, is that `docker compose logs -f` output stays greppable by hand and parseable by a downstream log collector without adding an external dependency.
 
 ## Key Files
 
-- `backend/app/observability.py` — single source of truth for logging configuration, the JSON formatter, request-id context, sensitive-field scrubbing, and domain event helpers.
-- `backend/app/main.py` — FastAPI factory that calls `configure_logging()`, installs ASGI middleware for per-request tracing, and defines exception handlers that emit structured events.
-- `backend/app/bootstrap.py`, `backend/app/cli.py`, `backend/app/db.py`, `backend/app/migrations.py`, `backend/app/agent/*.py`, `backend/app/ai/deepseek.py`, `backend/app/api/*.py` — consumers that create a module-level `logger = logging.getLogger(__name__)` and call either `logger.info/warning/error(...)` directly or the domain-event helpers from `observability`.
+- `backend/app/observability.py` -- single source of truth for logging configuration, the JSON formatter, request-id context, sensitive-field scrubbing, and domain event helpers.
+- `backend/app/main.py` -- FastAPI factory that calls `configure_logging()`, installs ASGI middleware for per-request tracing, and defines exception handlers that emit structured events.
+- `backend/app/bootstrap.py`, `backend/app/cli.py`, `backend/app/db.py`, `backend/app/migrations.py`, `backend/app/agent/*.py`, `backend/app/ai/deepseek.py`, `backend/app/api/*.py` -- consumers that create a module-level `logger = logging.getLogger(__name__)` and call either `logger.info/warning/error(...)` directly or the domain-event helpers from `observability`.
 
 ## Architecture
 
@@ -58,7 +58,7 @@ Every log emitted during the request automatically picks up this id because `Jso
 Callers attach extra fields via two paths:
 
 1. **Domain-event helpers** in `observability.py`: `availability_search`, `proposal_created`, `booking_commit`, `idempotency_hit`, `conflict_rejected`, `tool_executed`, `deepseek_status`, `staff_alert_created`. Each wraps `log_event(logger, "<event>", ...)` which sets `extra={"event": ..., "fields": kwargs}`.
-2. **Direct `logger.log(...)` calls** with `extra={"endpoint": ..., "method": ..., "status": ..., "duration_ms": ...}` — used by the request middleware and exception handlers.
+2. **Direct `logger.log(...)` calls** with `extra={"endpoint": ..., "method": ..., "status": ..., "duration_ms": ...}` -- used by the request middleware and exception handlers.
 
 `JsonFormatter` serializes these as top-level keys plus a nested `fields` dict. The documented per-line shape is:
 
@@ -115,7 +115,7 @@ Modules import `logging` and create `logger = logging.getLogger(__name__)`. For 
 
 - Every log line is a single JSON object produced by `JsonFormatter`; there is no plain-text fallback handler.
 - Logs are written to stdout via `StreamHandler`; no file sink is configured in application code.
-- The root logger is configured once in `create_app()` and is idempotent — repeated imports do not duplicate handlers.
+- The root logger is configured once in `create_app()` and is idempotent -- repeated imports do not duplicate handlers.
 - Uvicorn's own loggers (`uvicorn`, `uvicorn.error`, `uvicorn.access`) are wired through the same JSON formatter so access logs share the request id.
 - `httpx` is silenced at INFO to avoid leaking outbound URLs at normal verbosity.
 - Tracebacks are intentionally never emitted verbatim; only `exc_type` and a truncated `error_detail` are serialized, because tracebacks can embed local variables containing patient data.

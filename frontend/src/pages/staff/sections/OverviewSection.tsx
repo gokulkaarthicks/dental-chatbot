@@ -9,9 +9,8 @@
 import { ArrowRight } from "lucide-react";
 
 import { staffApi, type StaffAlert, type StaffAppointment, type SummaryCounts } from "../../../api/staff";
+import { REQUEST_TYPE_LABELS, relativeTime } from "../../../lib/staffFormat";
 import {
-  REQUEST_TYPE_LABELS,
-  relativeTime,
   severityBadge,
   EmptyState,
   ErrorState,

@@ -47,12 +47,12 @@ There is no explicit per-endpoint rate limiting implemented in the referenced fi
 
 ## Project Structure
 The backend exposes several FastAPI routers under `/api`:
-- `/api/chat` — patient chat operations.
-- `/api/scheduling` — interactive scheduling operations tied to a patient conversation.
-- `/api/staff` — staff dashboard, authentication, appointments, alerts, requests, and patients.
-- `/api/health` — liveness and database probe.
-- `/api/clinic` — public clinic configuration.
-- `/api/demo/status` — aggregate fixture counts and reset generation.
+- `/api/chat` -- patient chat operations.
+- `/api/scheduling` -- interactive scheduling operations tied to a patient conversation.
+- `/api/staff` -- staff dashboard, authentication, appointments, alerts, requests, and patients.
+- `/api/health` -- liveness and database probe.
+- `/api/clinic` -- public clinic configuration.
+- `/api/demo/status` -- aggregate fixture counts and reset generation.
 
 ```mermaid
 graph TB

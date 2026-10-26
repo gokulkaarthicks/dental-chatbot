@@ -1,8 +1,8 @@
 """Availability search and slot validation.
 
 This module is read-only. It answers "what could be booked?" and "is this exact
-interval still bookable?"; the booking itself lives in ``scheduling_engine`` and
-runs under ``BEGIN IMMEDIATE``.
+interval still bookable?"; the booking itself lives in ``app/services/proposals.py``
+and ``app/services/scheduling.py`` and runs under ``BEGIN IMMEDIATE``.
 
 Invariants implemented here
 ---------------------------
@@ -40,12 +40,23 @@ from app.models import (
 from app.observability import log_event
 from app.services import provider_rules
 from app.services.date_parsing import ResolvedPreferences
-from app.timeutil import SLOT_MINUTES, clinic_now, is_open_weekday
+from app.tenancy import ClinicContext
 
 logger = logging.getLogger(__name__)
 
-MAX_RUN_SLOTS = 8  # 4 hours; guards against a misconfigured type
+# A run may not span more than a working day, and never more than four hours of
+# grid. The cap used to be a flat 8 slots, which silently assumed a 30-minute
+# clinic; on a 20-minute grid the same 8 slots would only cover 2+ hours, so the
+# limit is now expressed in the time it was always meant to guard and converted
+# per tenant by :func:`max_run_slots`.
+MAX_RUN_MINUTES = 240
 MAX_OPTIONS = 24
+
+
+def max_run_slots(clinic: ClinicContext) -> int:
+    """How many consecutive slots a single visit may occupy at this clinic."""
+    by_time = MAX_RUN_MINUTES // clinic.config.slot_minutes
+    return max(1, min(by_time, clinic.config.slots_per_day))
 
 
 @dataclass
@@ -101,8 +112,9 @@ class SearchResult:
         return bool(self.options)
 
 
-def slots_required(duration_minutes: int) -> int:
-    return max(1, -(-duration_minutes // SLOT_MINUTES))
+def slots_required(clinic: ClinicContext, duration_minutes: int) -> int:
+    """How many of *this clinic's* slots a visit of that length occupies."""
+    return clinic.config.slots_required(duration_minutes)
 
 
 def stable_slot_id(provider_id: int, starts_at: datetime) -> str:
@@ -110,9 +122,15 @@ def stable_slot_id(provider_id: int, starts_at: datetime) -> str:
 
 
 def resolve_appointment_type(
-    session: Session, code: str | None
+    session: Session, clinic: ClinicContext, code: str | None
 ) -> tuple[AppointmentType | None, str | None]:
-    """Look up a type by code or a friendly alias. Returns (type, error)."""
+    """Look up a type by code or a friendly alias. Returns (type, error).
+
+    ``clinic`` is explicit because ``code`` is only unique *within* a clinic: both
+    demo practices run a ``cleaning`` type with different durations, and letting
+    the query cross tenants would book tenant A's hour-long cleaning on tenant B's
+    forty-minute grid.
+    """
     normalized = (code or "").strip().lower().replace("-", "_").replace(" ", "_")
     aliases = {
         "clean": "cleaning",
@@ -133,7 +151,10 @@ def resolve_appointment_type(
         return None, "missing_type"
     wanted = aliases.get(normalized, normalized)
     appointment_type = session.scalar(
-        select(AppointmentType).where(AppointmentType.code == wanted)
+        select(AppointmentType).where(
+            AppointmentType.code == wanted,
+            AppointmentType.clinic_id == clinic.clinic_id,
+        )
     )
     if appointment_type is None:
         return None, "unknown_type"
@@ -148,11 +169,20 @@ def _load_free_intervals(
     provider_ids: list[int] | None,
     now: datetime,
 ) -> dict[int, list[AvailabilitySlot]]:
-    """Free intervals grouped by provider, ordered by start, within the range."""
+    """Free intervals grouped by provider, ordered by start, within the range.
+
+    Tenant filtering is carried by the session binding: ``AvailabilitySlot`` is a
+    full entity select, so the loader criteria applies and a provider id that
+    happens to exist in both clinics cannot pool the two grids.
+    """
     window_start = datetime.combine(first_day, datetime.min.time())
     window_end = datetime.combine(last_day + timedelta(days=1), datetime.min.time())
 
-    claimed = select(SlotClaim.availability_slot_id).where(SlotClaim.active.is_(True))
+    claimed = (
+        select(SlotClaim.availability_slot_id)
+        .where(SlotClaim.active.is_(True))
+        .execution_options(tenant_scoped=False)
+    )
     statement = (
         select(AvailabilitySlot)
         .where(
@@ -190,14 +220,26 @@ def _consecutive_runs(
 
 
 def _patient_conflict(
-    session: Session, patient_ids: list[int], starts_at: datetime, ends_at: datetime
+    session: Session,
+    clinic: ClinicContext,
+    patient_ids: list[int],
+    starts_at: datetime,
+    ends_at: datetime,
 ) -> bool:
-    """True when any of these patients already has a live appointment overlapping."""
+    """True when any of these patients already has a live appointment overlapping.
+
+    The projection is ``Appointment.id``, not the entity, so the ORM tenant
+    criteria does not rewrite it; the clinic predicate is written out here for that
+    reason. Two clinics sharing a patient row would otherwise let one clinic's
+    booking block the other's, and a double-booked patient is the one failure this
+    engine is not allowed to make.
+    """
     if not patient_ids:
         return False
     return (
         session.scalar(
             select(Appointment.id).where(
+                Appointment.clinic_id == clinic.clinic_id,
                 Appointment.patient_id.in_(patient_ids),
                 Appointment.status == AppointmentStatus.BOOKED.value,
                 Appointment.starts_at < ends_at,
@@ -237,6 +279,7 @@ def match_provider_by_name(providers: list[Provider], name: str | None) -> list[
 
 def search_availability(
     session: Session,
+    clinic: ClinicContext,
     *,
     appointment_type: AppointmentType,
     preferences: ResolvedPreferences,
@@ -251,10 +294,14 @@ def search_availability(
     ``preferences`` carries the resolved days, windows, and weekday filters.
     Provider and patient names are *not* trusted from the model here: callers
     resolve the patients from the session first.
+
+    ``clinic`` is required and separate from ``preferences``: the preferences say
+    what the patient asked for, the clinic says what grid it has to be found on.
     """
-    current = now or clinic_now()
-    required = slots_required(appointment_type.duration_minutes)
-    if required > MAX_RUN_SLOTS:
+    config = clinic.config
+    current = now or config.now()
+    required = slots_required(clinic, appointment_type.duration_minutes)
+    if required > max_run_slots(clinic):
         raise ValueError("appointment type duration exceeds the supported maximum")
 
     first_day, last_day = preferences.scan_bounds
@@ -291,9 +338,9 @@ def search_availability(
                 continue
             if not preferences.accepts_time(start):
                 continue
-            if not is_open_weekday(day):
+            if not config.is_open_weekday(day):
                 continue
-            if _patient_conflict(session, patient_ids, start, end):
+            if _patient_conflict(session, clinic, patient_ids, start, end):
                 continue
             key = (provider_id, start.strftime("%Y-%m-%dT%H:%M"))
             if key in seen:
@@ -319,7 +366,7 @@ def search_availability(
 
     if preferences.days:
         for day in preferences.days:
-            if not is_open_weekday(day):
+            if not config.is_open_weekday(day):
                 closed_days.append(day)
 
     # Spread the answer across days so the patient sees alternatives, not six
@@ -356,6 +403,7 @@ def search_availability(
 
 def is_interval_bookable(
     session: Session,
+    clinic: ClinicContext,
     *,
     provider_id: int,
     starts_at: datetime,
@@ -372,6 +420,11 @@ def is_interval_bookable(
     day, outside business hours, or the type no longer qualifies for the
     provider.
 
+    ``clinic`` decides the grid the interval is measured on and the calendar it is
+    checked against. A proposal built on tenant A's 30-minute grid must fail
+    revalidation at tenant B rather than silently passing because the timestamps
+    happen to line up there too.
+
     ``self_hold_id`` excludes holds owned by the proposal being confirmed.
     Without it, a proposal's own hold would make its own slot look taken and a
     perfectly valid booking would be rejected after the patient confirmed.
@@ -382,6 +435,7 @@ def is_interval_bookable(
     """
     return _validate_run(
         session,
+        clinic,
         provider_id=provider_id,
         starts_at=starts_at,
         duration_minutes=duration_minutes,
@@ -394,6 +448,7 @@ def is_interval_bookable(
 
 def _validate_run(
     session: Session,
+    clinic: ClinicContext,
     *,
     provider_id: int,
     starts_at: datetime,
@@ -403,11 +458,12 @@ def _validate_run(
     ignore_appointment_id: int | None = None,
     unheld_slot_ids: Iterable[int] | None = None,
 ) -> list[AvailabilitySlot] | None:
-    required = slots_required(duration_minutes)
+    config = clinic.config
+    required = slots_required(clinic, duration_minutes)
     day = starts_at.date()
-    if not is_open_weekday(day):
+    if not config.is_open_weekday(day):
         return None
-    end = starts_at + timedelta(minutes=required * SLOT_MINUTES)
+    end = starts_at + config.slot_length * required
 
     # Intervals a reschedule/cancellation proposal relies on without holding:
     # their holder is the target appointment, which this proposal moves or
@@ -419,7 +475,12 @@ def _validate_run(
             or_(
                 AvailabilitySlot.id.in_(unheld),
                 ~AvailabilitySlot.id.in_(
-                    select(SlotClaim.availability_slot_id).where(SlotClaim.active.is_(True))
+                    select(SlotClaim.availability_slot_id)
+                    .where(
+                        SlotClaim.active.is_(True),
+                        SlotClaim.clinic_id == clinic.clinic_id,
+                    )
+                    .execution_options(tenant_scoped=False)
                 ),
             )
         )
@@ -427,12 +488,15 @@ def _validate_run(
     claim_filters = [
         SlotClaim.active.is_(True),
         SlotClaim.availability_slot_id.in_(
-            select(AvailabilitySlot.id).where(
+            select(AvailabilitySlot.id)
+            .where(
+                AvailabilitySlot.clinic_id == clinic.clinic_id,
                 AvailabilitySlot.provider_id == provider_id,
                 AvailabilitySlot.starts_at >= starts_at,
                 AvailabilitySlot.starts_at < end,
                 *unheld_filters,
             )
+            .execution_options(tenant_scoped=False)
         ),
     ]
     if self_hold_id is not None and ignore_appointment_id is not None:
@@ -467,6 +531,11 @@ def _validate_run(
         session.scalars(
             select(AvailabilitySlot)
             .where(
+                # Written out rather than left to the session binding: this is the
+                # lookup that decides whether a slot id handed back by an earlier
+                # search is still the same slot, and a tenant-A id presented to
+                # tenant B must simply not exist here.
+                AvailabilitySlot.clinic_id == clinic.clinic_id,
                 AvailabilitySlot.provider_id == provider_id,
                 AvailabilitySlot.starts_at >= starts_at,
                 AvailabilitySlot.starts_at < end,
@@ -480,14 +549,17 @@ def _validate_run(
     if ignore_appointment_id is not None:
         ignored_claimed_ids = set(
             session.scalars(
-                select(SlotClaim.availability_slot_id).where(
+                select(SlotClaim.availability_slot_id)
+                .where(
                     SlotClaim.appointment_id == ignore_appointment_id,
                     SlotClaim.active.is_(True),
+                    SlotClaim.clinic_id == clinic.clinic_id,
                 )
+                .execution_options(tenant_scoped=False)
             )
         )
     for offset, slot in enumerate(rows):
-        if slot.starts_at != starts_at + timedelta(minutes=offset * SLOT_MINUTES):
+        if slot.starts_at != starts_at + config.slot_length * offset:
             return None
         if slot.status != SlotStatus.AVAILABLE.value and slot.id not in ignored_claimed_ids:
             return None
@@ -503,7 +575,7 @@ def _validate_run(
             return None
 
     provider = session.get(Provider, provider_id)
-    if provider is None or not provider.active:
+    if provider is None or not provider.active or provider.clinic_id != clinic.clinic_id:
         return None
     if not provider_rules.provider_eligible(provider, appointment_type):
         return None
@@ -512,6 +584,7 @@ def _validate_run(
 
 def _provider_free_runs(
     session: Session,
+    clinic: ClinicContext,
     *,
     provider_id: int,
     day: date,
@@ -520,9 +593,15 @@ def _provider_free_runs(
     now: datetime,
     before: datetime | None = None,
 ) -> list[tuple[datetime, datetime]]:
-    required = slots_required(duration_minutes)
-    claimed = select(SlotClaim.availability_slot_id).where(SlotClaim.active.is_(True))
+    config = clinic.config
+    required = slots_required(clinic, duration_minutes)
+    claimed = (
+        select(SlotClaim.availability_slot_id)
+        .where(SlotClaim.active.is_(True), SlotClaim.clinic_id == clinic.clinic_id)
+        .execution_options(tenant_scoped=False)
+    )
     statement = select(AvailabilitySlot).where(
+        AvailabilitySlot.clinic_id == clinic.clinic_id,
         AvailabilitySlot.provider_id == provider_id,
         AvailabilitySlot.starts_at >= max(after, now),
         AvailabilitySlot.starts_at < datetime.combine(day + timedelta(days=1), datetime.min.time()),
@@ -530,7 +609,7 @@ def _provider_free_runs(
         AvailabilitySlot.id.not_in(claimed),
     )
     if before is not None:
-        statement = statement.where(AvailabilitySlot.starts_at + timedelta(minutes=SLOT_MINUTES) <= before)
+        statement = statement.where(AvailabilitySlot.starts_at + config.slot_length <= before)
     rows = list(session.scalars(statement.order_by(AvailabilitySlot.starts_at)))
     return [(run[0].starts_at, run[-1].ends_at) for run in _consecutive_runs(rows, required)]
 
@@ -547,6 +626,7 @@ class FamilyMemberRequest:
 
 def search_family_availability(
     session: Session,
+    clinic: ClinicContext,
     *,
     members: list[FamilyMemberRequest],
     preferences: ResolvedPreferences,
@@ -562,6 +642,7 @@ def search_family_availability(
     search = search_back_to_back_plans if back_to_back else search_nearby_family_plans
     return search(
         session,
+        clinic,
         members=members,
         preferences=preferences,
         max_plans=3,
@@ -581,6 +662,7 @@ MAX_FAMILY_CANDIDATES_PER_MEMBER = 32
 
 def _family_candidates_for_day(
     session: Session,
+    clinic: ClinicContext,
     *,
     members: list[FamilyMemberRequest],
     day: date,
@@ -608,6 +690,7 @@ def _family_candidates_for_day(
         for provider in eligible:
             runs = _provider_free_runs(
                 session,
+                clinic,
                 provider_id=provider.id,
                 day=day,
                 after=datetime.combine(day, datetime.min.time()),
@@ -619,13 +702,14 @@ def _family_candidates_for_day(
                 key = (provider.id, start)
                 if key in seen or not preferences.accepts_time(start):
                     continue
-                if _patient_conflict(session, [member.patient_id], start, end):
+                if _patient_conflict(session, clinic, [member.patient_id], start, end):
                     continue
                 slot_ids = [
                     row.id
                     for row in session.scalars(
                         select(AvailabilitySlot)
                         .where(
+                            AvailabilitySlot.clinic_id == clinic.clinic_id,
                             AvailabilitySlot.provider_id == provider.id,
                             AvailabilitySlot.starts_at >= start,
                             AvailabilitySlot.starts_at < end,
@@ -633,7 +717,7 @@ def _family_candidates_for_day(
                         .order_by(AvailabilitySlot.starts_at)
                     )
                 ]
-                if len(slot_ids) != slots_required(member.appointment_type.duration_minutes):
+                if len(slot_ids) != slots_required(clinic, member.appointment_type.duration_minutes):
                     continue
                 seen.add(key)
                 candidates.append(
@@ -686,6 +770,7 @@ def _nearby_family_plan_score(plan: list[SlotOption]) -> tuple[Any, ...]:
 
 def _nearby_plans_for_day(
     session: Session,
+    clinic: ClinicContext,
     *,
     members: list[FamilyMemberRequest],
     day: date,
@@ -696,6 +781,7 @@ def _nearby_plans_for_day(
 ) -> list[list[SlotOption]]:
     candidates_by_member = _family_candidates_for_day(
         session,
+        clinic,
         members=members,
         day=day,
         providers=providers,
@@ -728,6 +814,7 @@ def _nearby_plans_for_day(
 
 def search_nearby_family_plans(
     session: Session,
+    clinic: ClinicContext,
     *,
     members: list[FamilyMemberRequest],
     preferences: ResolvedPreferences,
@@ -740,7 +827,7 @@ def search_nearby_family_plans(
     A plan may have gaps, but appointments never overlap. Partial family plans
     are deliberately excluded so the confirmation remains atomic.
     """
-    current = now or clinic_now()
+    current = now or clinic.config.now()
     if not members:
         return []
 
@@ -751,9 +838,10 @@ def search_nearby_family_plans(
     seen: set[tuple[str, ...]] = set()
     day = scan_from
     while day <= last_day and len(plans) < max_plans:
-        if preferences.accepts_day(day) and is_open_weekday(day):
+        if preferences.accepts_day(day) and clinic.config.is_open_weekday(day):
             for plan in _nearby_plans_for_day(
                 session,
+                clinic,
                 members=members,
                 day=day,
                 providers=providers,
@@ -770,100 +858,9 @@ def search_nearby_family_plans(
     return plans
 
 
-def _plan_day(
-    session: Session,
-    *,
-    members: list[FamilyMemberRequest],
-    day: date,
-    providers: list[Provider],
-    preferences: ResolvedPreferences,
-    back_to_back: bool,
-    now: datetime,
-) -> list[SlotOption] | None:
-    cursor = datetime.combine(day, datetime.min.time()) if back_to_back else None
-    plan: list[SlotOption] = []
-    used: set[tuple[int, str]] = set()
-    # A parent booked alongside their child is accompanying, not a clash, so
-    # each member is checked only against their own existing appointments.
-
-    for member in members:
-        candidates = [
-            provider
-            for provider in providers
-            if provider_rules.provider_eligible(provider, member.appointment_type)
-        ]
-        if member.provider_name:
-            candidates = match_provider_by_name(candidates, member.provider_name)
-        if not candidates:
-            return None
-
-        choice: tuple[Provider, datetime, datetime] | None = None
-        search_after = cursor or datetime.combine(day, datetime.min.time())
-        for provider in candidates:
-            runs = _provider_free_runs(
-                session,
-                provider_id=provider.id,
-                day=day,
-                after=search_after,
-                duration_minutes=member.appointment_type.duration_minutes,
-                now=now,
-            )
-            for start, end in runs:
-                if not preferences.accepts_time(start):
-                    continue
-                key = (provider.id, start.strftime("%Y-%m-%dT%H:%M"))
-                if key in used:
-                    continue
-                if _patient_conflict(session, [member.patient_id], start, end):
-                    continue
-                choice = (provider, start, end)
-                break
-            if choice:
-                break
-        if choice is None:
-            return None
-
-        provider, start, end = choice
-        required = slots_required(member.appointment_type.duration_minutes)
-        slot_ids = [
-            row.id
-            for row in session.scalars(
-                select(AvailabilitySlot)
-                .where(
-                    AvailabilitySlot.provider_id == provider.id,
-                    AvailabilitySlot.starts_at >= start,
-                    AvailabilitySlot.starts_at < end,
-                )
-                .order_by(AvailabilitySlot.starts_at)
-            )
-        ]
-        if len(slot_ids) != required:
-            return None
-        used.add((provider.id, start.strftime("%Y-%m-%dT%H:%M")))
-        plan.append(
-            SlotOption(
-                slot_ids=slot_ids,
-                stable_id=stable_slot_id(provider.id, start),
-                provider_id=provider.id,
-                provider_name=provider.full_name,
-                provider_credentials=provider.credentials,
-                provider_specialties=provider.specialty_names,
-                appointment_type_code=member.appointment_type.code,
-                appointment_type_name=member.appointment_type.name,
-                starts_at=start,
-                ends_at=end,
-                duration_minutes=member.appointment_type.duration_minutes,
-                patient_id=member.patient_id,
-                patient_first_name=member.patient_first_name,
-            )
-        )
-        if back_to_back:
-            cursor = end
-    return plan
-
-
 def search_back_to_back_plans(
     session: Session,
+    clinic: ClinicContext,
     *,
     members: list[FamilyMemberRequest],
     preferences: ResolvedPreferences,
@@ -878,10 +875,10 @@ def search_back_to_back_plans(
     book the whole family. Plans are collected across days rather than one per
     day, because a single day often has room for only one block.
     """
-    current = now or clinic_now()
+    current = now or clinic.config.now()
     if not members:
         return []
-    if len(members) > MAX_RUN_SLOTS:
+    if len(members) > max_run_slots(clinic):
         raise ValueError("too many family members for one back-to-back block")
 
     providers = load_providers(session)
@@ -895,9 +892,10 @@ def search_back_to_back_plans(
     seen: set[tuple[str, ...]] = set()
     day = scan_from
     while day <= last_day and len(plans) < max_plans:
-        if preferences.accepts_day(day) and is_open_weekday(day):
+        if preferences.accepts_day(day) and clinic.config.is_open_weekday(day):
             for plan in _blocks_for_day(
                 session,
+                clinic,
                 members=members,
                 day=day,
                 providers=providers,
@@ -918,6 +916,7 @@ def search_back_to_back_plans(
 
 def _blocks_for_day(
     session: Session,
+    clinic: ClinicContext,
     *,
     members: list[FamilyMemberRequest],
     day: date,
@@ -945,6 +944,7 @@ def _blocks_for_day(
                 candidates = match_provider_by_name(candidates, member.provider_name)
             choice = _earliest_chain(
                 session,
+                clinic,
                 member=member,
                 candidates=candidates,
                 day=day,
@@ -969,6 +969,7 @@ def _blocks_for_day(
 
 def _earliest_chain(
     session: Session,
+    clinic: ClinicContext,
     *,
     member: FamilyMemberRequest,
     candidates: list[Provider],
@@ -982,6 +983,7 @@ def _earliest_chain(
     for provider in candidates:
         runs = _provider_free_runs(
             session,
+            clinic,
             provider_id=provider.id,
             day=day,
             after=after,
@@ -994,13 +996,14 @@ def _earliest_chain(
                 continue
             if (provider.id, start) in used:
                 continue
-            if _patient_conflict(session, [member.patient_id], start, end):
+            if _patient_conflict(session, clinic, [member.patient_id], start, end):
                 continue
             slot_ids = [
                 row.id
                 for row in session.scalars(
                     select(AvailabilitySlot)
                     .where(
+                        AvailabilitySlot.clinic_id == clinic.clinic_id,
                         AvailabilitySlot.provider_id == provider.id,
                         AvailabilitySlot.starts_at >= start,
                         AvailabilitySlot.starts_at < end,
@@ -1008,7 +1011,7 @@ def _earliest_chain(
                     .order_by(AvailabilitySlot.starts_at)
                 )
             ]
-            if len(slot_ids) != slots_required(member.appointment_type.duration_minutes):
+            if len(slot_ids) != slots_required(clinic, member.appointment_type.duration_minutes):
                 continue
             return SlotOption(
                 slot_ids=slot_ids,
@@ -1030,12 +1033,14 @@ def _earliest_chain(
 
 __all__ = [
     "MAX_OPTIONS",
+    "MAX_RUN_MINUTES",
     "FamilyMemberRequest",
     "SearchResult",
     "SlotOption",
     "is_interval_bookable",
     "load_providers",
     "match_provider_by_name",
+    "max_run_slots",
     "resolve_appointment_type",
     "search_availability",
     "search_back_to_back_plans",

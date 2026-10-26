@@ -134,13 +134,15 @@ def write_transaction(session: Session | None = None) -> Iterator[Session]:
 
 
 @contextmanager
-def fresh_write_transaction() -> Iterator[Session]:
+def fresh_write_transaction(clinic_id: int | None = None) -> Iterator[Session]:
     """A new session in its own write transaction, independent of any caller.
 
     Use this for bookkeeping (commit trailers) that must persist even when the
-    caller's transaction is being torn down.
+    caller's transaction is being torn down. It opens a *brand new* session, so
+    the tenant has to be re-bound here -- otherwise the trailer would be written
+    unscoped and the insert guard would reject it.
     """
-    session = new_session()
+    session = new_session(clinic_id)
     try:
         raw = session.connection().connection.driver_connection
         raw.execute("BEGIN IMMEDIATE")

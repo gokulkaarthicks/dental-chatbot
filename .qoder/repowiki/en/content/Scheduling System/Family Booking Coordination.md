@@ -8,7 +8,16 @@
 - [scheduling.py API](file://backend/app/api/scheduling.py)
 - [test_nearby_family_plans.py](file://backend/tests/test_nearby_family_plans.py)
 - [e2e_demo.py](file://backend/scripts/e2e_demo.py)
+- [transactions.py](file://backend/app/services/transactions.py)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Updated transaction handling and session management for family booking lifecycle
+- Enhanced state persistence with improved request revision tracking
+- Added edge case handling for stale options and replay scenarios
+- Improved atomic booking coordination with better conflict resolution
+- Updated examples to reflect current implementation patterns
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -22,13 +31,13 @@
 9. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains how the system coordinates family bookings: multiple patients are searched, validated, and booked atomically as one complete plan while preserving each patient’s individual constraints. The coordination is split across three layers:
+This document explains how the system coordinates family bookings: multiple patients are searched, validated, and booked atomically as one complete plan while preserving each patient's individual constraints. The coordination is split across three layers:
 
 - **Data model**: family groups and members define who can be booked together.
 - **Availability engine**: finds real, non-overlapping time runs for every member on the same day.
 - **Scheduling service**: persists request context, merges partial inputs, builds UI cards, and converts a selected family plan into an atomic booking proposal.
 
-The design ensures that a user never sees or confirms a partial family plan, and that authorization is enforced per household rather than by shared phone number alone.
+The design ensures that a user never sees or confirms a partial family plan, and that authorization is enforced per household rather than by shared phone number alone. Recent improvements have enhanced transaction handling, state persistence, and edge case management for multi-patient bookings.
 
 ## Project Structure
 Family booking coordination lives primarily in the backend services and models:
@@ -41,9 +50,11 @@ Scheduling["Scheduling Service<br/>scheduling.py"]
 API["Scheduling API Routes<br/>api/scheduling.py"]
 Tests["Tests<br/>test_nearby_family_plans.py"]
 Demo["Demo Script<br/>e2e_demo.py"]
+Transactions["Transaction Management<br/>transactions.py"]
 API --> Scheduling
 Scheduling --> Availability
 Scheduling --> Models
+Scheduling --> Transactions
 Tests --> Availability
 Tests --> Scheduling
 Demo --> Scheduling
@@ -56,6 +67,7 @@ Demo --> Scheduling
 - [scheduling.py API:256-362](file://backend/app/api/scheduling.py#L256-L362)
 - [test_nearby_family_plans.py:1-56](file://backend/tests/test_nearby_family_plans.py#L1-L56)
 - [e2e_demo.py:290-321](file://backend/scripts/e2e_demo.py#L290-L321)
+- [transactions.py:85-162](file://backend/app/services/transactions.py#L85-L162)
 
 **Section sources**
 - [family.py:1-60](file://backend/app/models/family.py#L1-L60)
@@ -75,6 +87,7 @@ The core components are:
 | `_remember_request` | Persists the canonical scheduling request and handles revisions | [scheduling.py:137-191](file://backend/app/services/scheduling.py#L137-L191) |
 | `check_family_authorisation` | Returns other household members the current verified patient may book | [scheduling.py:2344-2371](file://backend/app/services/scheduling.py#L2344-L2371) |
 | `_merge_family_member_inputs` | Merges partial conversational answers into stored family request state | [scheduling.py:194-219](file://backend/app/services/scheduling.py#L194-L219) |
+| `hold_family_option` | Creates atomic family proposals with improved transaction handling | [scheduling.py:2693-2979](file://backend/app/services/scheduling.py#L2693-L2979) |
 
 **Section sources**
 - [family.py:21-60](file://backend/app/models/family.py#L21-L60)
@@ -84,6 +97,7 @@ The core components are:
 - [scheduling.py:194-219](file://backend/app/services/scheduling.py#L194-L219)
 - [scheduling.py:341-390](file://backend/app/services/scheduling.py#L341-L390)
 - [scheduling.py:2344-2371](file://backend/app/services/scheduling.py#L2344-L2371)
+- [scheduling.py:2693-2979](file://backend/app/services/scheduling.py#L2693-L2979)
 
 ## Architecture Overview
 At a high level, family booking follows this flow:
@@ -94,6 +108,8 @@ At a high level, family booking follows this flow:
 4. It searches for complete family plans using `search_nearby_family_plans`.
 5. It renders complete family options as single booking units via `family_option_cards`.
 6. Selecting a family option creates a proposal that books all members atomically.
+
+Recent improvements include better transaction handling, ensuring that request state is committed before proposal creation, and enhanced handling of edge cases like stale options and replay scenarios.
 
 ```mermaid
 sequenceDiagram
@@ -180,7 +196,7 @@ Important policy:
 
 - The verified adult can always book themselves.
 - Other household members can be added for booking purposes.
-- This grants booking access only; it does not expose another adult’s private history or insurance in the conversation.
+- This grants booking access only; it does not expose another adult's private history or insurance in the conversation.
 - Another adult is not automatically added just because they share a household; explicit matching or naming is required.
 
 ```mermaid
@@ -258,7 +274,7 @@ CollectCandidates --> HasAll{"Every member has candidates?"}
 HasAll --> |No| NextDay
 HasAll --> |Yes| BuildPlans["Build complete plans without overlaps"]
 BuildPlans --> ScorePlans["Score plans by gap and timing"]
-ScorePlans --> Deduplicate["Remove duplicate stable-id signatures"]
+BuildPlans --> Deduplicate["Remove duplicate stable-id signatures"]
 Deduplicate --> Limit["Limit to max plans"]
 Limit --> ReturnPlans["Return complete family plans"]
 ```
@@ -292,12 +308,12 @@ Complexity considerations:
 | `slots` | Individual slot cards for each family member |
 | `settled` | Indicates whether the request already has a hold or booking |
 | `require_open` | Tells the client to re-check freshness when not settled |
-| `back_to_back` | True if every member’s slot is immediately after the previous one |
+| `back_to_back` | True if every member's slot is immediately after the previous one |
 | `title` | User-facing label indicating one confirmation books everyone |
 | `slot_count` | Number of family members included |
 | `starts_at` / `ends_at` | Overall range of the family plan |
 
-The function sorts each plan by start time, computes whether the plan is back-to-back, and wraps each member’s slot in a standard slot card.
+The function sorts each plan by start time, computes whether the plan is back-to-back, and wraps each member's slot in a standard slot card.
 
 ```mermaid
 flowchart TD
@@ -355,7 +371,7 @@ Revision semantics:
 
 - Changing participants, appointment types, providers, or preferences starts a new revision.
 - Selecting another option within the same request keeps the request id, allowing old holds to be superseded safely.
-- This prevents a later search from accidentally losing the family’s requirements.
+- This prevents a later search from accidentally losing the family's requirements.
 
 **Section sources**
 - [scheduling.py:137-191](file://backend/app/services/scheduling.py#L137-L191)
@@ -385,6 +401,45 @@ PreserveFields --> ReturnMerged["Return merged participant list"]
 **Section sources**
 - [scheduling.py:194-219](file://backend/app/services/scheduling.py#L194-L219)
 
+### Enhanced Transaction Handling and State Management
+**Updated** Recent improvements have significantly enhanced the transaction handling and state management for family bookings:
+
+#### Atomic Proposal Creation
+The `hold_family_option` function now ensures proper transaction boundaries:
+
+1. **Request Persistence First**: The family request is persisted and committed before attempting to create proposals
+2. **Stale Option Detection**: Detects when clicked options are historical results and re-searches for fresh plans
+3. **Replay Handling**: Recognizes repeated selections of the same option as replays rather than new holds
+4. **Conflict Resolution**: Properly handles concurrent requests and existing pending bookings
+
+#### Session Management Improvements
+- Explicit `session.commit()` calls ensure request state is durable before proposal creation
+- Better handling of implicit vs explicit transactions
+- Improved error recovery when options become stale during processing
+
+```mermaid
+flowchart TD
+Start(["Hold family option"]) --> RememberRequest["_remember_request()"]
+RememberRequest --> CommitSession["session.commit()"]
+CommitSession --> CheckActive{"Active proposal exists?"}
+CheckActive --> |Yes| CheckIdentity{"Same option identity?"}
+CheckIdentity --> |Yes| ReturnReplay["Return replayed proposal"]
+CheckIdentity --> |No| ContinueFlow["Continue to create new proposal"]
+CheckActive --> |No| ContinueFlow
+ContinueFlow --> ResolvePlan["_family_plan_for_card()"]
+ResolvePlan --> PlanValid{"Plan still valid?"}
+PlanValid --> |No| RescanFresh["Rescan for fresh plans"]
+PlanValid --> |Yes| CreateProposal["create_proposal()"]
+CreateProposal --> CommitFinal["session.commit()"]
+CommitFinal --> ReturnSuccess["Return family proposal"]
+```
+
+**Diagram sources**
+- [scheduling.py:2780-2979](file://backend/app/services/scheduling.py#L2780-L2979)
+
+**Section sources**
+- [scheduling.py:2780-2979](file://backend/app/services/scheduling.py#L2780-L2979)
+
 ### Multi-Patient Booking Flow
 A typical multi-patient booking flow is:
 
@@ -397,6 +452,8 @@ A typical multi-patient booking flow is:
 7. The client selects one family option.
 8. The system creates a proposal that holds all slots atomically.
 9. Confirmation finalizes the booking for every member.
+
+Recent improvements ensure better handling of edge cases like stale options, replay scenarios, and concurrent requests.
 
 ```mermaid
 sequenceDiagram
@@ -414,6 +471,8 @@ Engine-->>Service : Complete family plans
 Service-->>API : Family option cards
 Client->>API : POST /scheduling/slots/select
 API->>Service : propose_booking(family option)
+Service->>Service : hold_family_option()
+Service->>Service : _remember_request() + commit()
 Service->>Proposals : create_proposal(hold all slots)
 Proposals-->>Service : Proposal with family items
 Service-->>API : Family proposal card
@@ -429,25 +488,29 @@ Proposals-->>API : Confirmed family booking
 - [scheduling.py:341-390](file://backend/app/services/scheduling.py#L341-L390)
 - [scheduling.py:137-191](file://backend/app/services/scheduling.py#L137-L191)
 - [availability_engine.py:729-770](file://backend/app/services/availability_engine.py#L729-L770)
+- [scheduling.py:2780-2979](file://backend/app/services/scheduling.py#L2780-L2979)
 
 **Section sources**
 - [scheduling.py API:256-362](file://backend/app/api/scheduling.py#L256-L362)
 - [scheduling.py API:456-487](file://backend/app/api/scheduling.py#L456-L487)
 - [scheduling.py:341-390](file://backend/app/services/scheduling.py#L341-L390)
 - [availability_engine.py:729-770](file://backend/app/services/availability_engine.py#L729-L770)
+- [scheduling.py:2780-2979](file://backend/app/services/scheduling.py#L2780-L2979)
 
 ### Conflict Resolution When Family Members Have Different Constraints
 Conflict resolution happens at several levels:
 
 | Constraint | Resolution |
 |---|---|
-| Different appointment types | Each member’s `FamilyMemberRequest` carries its own `AppointmentType`, so durations and eligibility are evaluated per person |
+| Different appointment types | Each member's `FamilyMemberRequest` carries its own `AppointmentType`, so durations and eligibility are evaluated per person |
 | Different provider preferences | Provider filtering applies per member; if a preferred provider is unavailable, other eligible providers are considered |
 | Existing appointments | `_patient_conflict` rejects intervals that overlap a live booked appointment for the same patient |
 | Overlapping family slots | Complete plans must be non-overlapping; overlapping combinations are rejected during plan construction |
 | Partial availability | Only complete plans are returned; partial family plans are deliberately excluded |
+| Stale options | Historical options trigger fresh rescanning to provide current availability |
+| Concurrent requests | Transaction boundaries prevent double-booking and handle replay scenarios |
 
-The scoring function prefers plans with smaller gaps between family members’ appointments, then smaller maximum gaps, then earlier overall timing. This makes “close together” more attractive than widely separated times, even when exact back-to-back chaining is not possible.
+The scoring function prefers plans with smaller gaps between family members' appointments, then smaller maximum gaps, then earlier overall timing. This makes "close together" more attractive than widely separated times, even when exact back-to-back chaining is not possible.
 
 ```mermaid
 flowchart TD
@@ -461,25 +524,31 @@ Combine --> OverlapCheck{"Any overlapping appointments?"}
 OverlapCheck --> |Yes| RejectPlan["Reject plan"]
 OverlapCheck --> |No| ScorePlan["Score plan"]
 ScorePlan --> BestPlans["Return best complete plans"]
+BestPlans --> StaleCheck{"Option still valid?"}
+StaleCheck --> |No| FreshRescan["Rescan for fresh plans"]
+StaleCheck --> |Yes| ReturnPlans["Return plans"]
 ```
 
 **Diagram sources**
 - [availability_engine.py:663-684](file://backend/app/services/availability_engine.py#L663-L684)
 - [availability_engine.py:687-726](file://backend/app/services/availability_engine.py#L687-L726)
 - [availability_engine.py:192-208](file://backend/app/services/availability_engine.py#L192-L208)
+- [scheduling.py:2834-2860](file://backend/app/services/scheduling.py#L2834-L2860)
 
 **Section sources**
 - [availability_engine.py:192-208](file://backend/app/services/availability_engine.py#L192-L208)
 - [availability_engine.py:663-726](file://backend/app/services/availability_engine.py#L663-L726)
+- [scheduling.py:2834-2860](file://backend/app/services/scheduling.py#L2834-L2860)
 
 ### Examples of Multi-Patient Booking Flows
 The end-to-end demo shows a family booking scenario where a parent requests cleanings for a spouse and child with back-to-back timing. The test suite verifies that family option cards correctly mark gapped plans as same-day but not back-to-back.
 
 Example flows:
 
-- **Spouse and child requested together**: The system offers a family option card containing both members’ slots.
+- **Spouse and child requested together**: The system offers a family option card containing both members' slots.
 - **Back-to-back preference**: The system tries to chain visits continuously; if impossible, it still offers same-day plans with gaps.
 - **Selection and confirmation**: Selecting the family option creates a family proposal; confirming books all members atomically.
+- **Edge case handling**: Stale options trigger fresh rescanning, and replay scenarios return existing proposals.
 
 **Section sources**
 - [e2e_demo.py:290-321](file://backend/scripts/e2e_demo.py#L290-L321)
@@ -498,6 +567,7 @@ Svc --> Pol["services/booking_policy.py"]
 Svc --> Date["services/date_parsing.py"]
 Svc --> AppSvc["services/appointments.py"]
 Svc --> Audit["services/audit.py"]
+Svc --> Trans["services/transactions.py"]
 ```
 
 Coupling observations:
@@ -506,6 +576,7 @@ Coupling observations:
 - The scheduling service depends on the availability engine for read-only scheduling primitives.
 - The family model is referenced by authorization and proposal ownership checks.
 - Proposals and booking policy provide transactional and scope-related behavior.
+- Transaction management provides robust session handling for family booking operations.
 
 Potential circular dependencies are avoided by keeping the availability engine read-only and letting the scheduling service coordinate persistence and UI rendering.
 
@@ -514,25 +585,30 @@ Potential circular dependencies are avoided by keeping the availability engine r
 - [scheduling.py:25-62](file://backend/app/services/scheduling.py#L25-L62)
 - [availability_engine.py:30-43](file://backend/app/services/availability_engine.py#L30-L43)
 - [family.py:15-18](file://backend/app/models/family.py#L15-L18)
+- [transactions.py:85-162](file://backend/app/services/transactions.py#L85-L162)
 
 **Section sources**
 - [scheduling.py API:1-28](file://backend/app/api/scheduling.py#L1-L28)
 - [scheduling.py:25-62](file://backend/app/services/scheduling.py#L25-L62)
 - [availability_engine.py:30-43](file://backend/app/services/availability_engine.py#L30-L43)
 - [family.py:15-18](file://backend/app/models/family.py#L15-L18)
+- [transactions.py:85-162](file://backend/app/services/transactions.py#L85-L162)
 
 ## Performance Considerations
-- **Candidate caps**: Each member’s candidate runs are limited to avoid combinatorial explosion.
+- **Candidate caps**: Each member's candidate runs are limited to avoid combinatorial explosion.
 - **Plan deduplication**: Plans are deduplicated by stable slot signatures.
 - **Result trimming**: Both family plan search and single-slot search cap results to keep responses small.
 - **Read-only availability engine**: The availability engine performs reads without holding writes, reducing lock contention.
 - **Preference clamping**: Scanning is bounded by preference date ranges and business-day filters.
+- **Transaction optimization**: Explicit commits reduce implicit transaction overhead.
+- **Cache usage**: Family plan caching improves performance for repeated searches.
 
 Recommendations:
 
 - Keep `max_plans` and `per_day` tuned to expected family sizes and clinic density.
 - Avoid exposing raw candidate lists to clients; let the service return only rendered cards.
 - Use refresh endpoints to validate stale family options instead of repeatedly searching.
+- Leverage the improved transaction handling for better concurrency support.
 
 [No sources needed since this section provides general guidance]
 
@@ -542,7 +618,7 @@ Recommendations:
 Symptoms:
 
 - Family member is not offered.
-- Authorization fails when trying to book someone outside the verified patient’s household.
+- Authorization fails when trying to book someone outside the verified patient's household.
 
 Likely causes:
 
@@ -552,7 +628,7 @@ Likely causes:
 
 Resolution:
 
-- Verify the caller’s patient session.
+- Verify the caller's patient session.
 - Ensure the target patient is linked to the same `FamilyGroup`.
 - Use `check_family_authorisation` to determine allowed additional members.
 
@@ -585,19 +661,24 @@ Resolution:
 - [availability_engine.py:729-770](file://backend/app/services/availability_engine.py#L729-L770)
 
 ### Stale or Taken Family Options
+**Updated** Recent improvements provide better handling of stale options:
+
 Symptoms:
 
 - A selected family option becomes stale before confirmation.
 - The UI reports that a slot is no longer open.
+- Historical options fail validation.
 
 Likely causes:
 
 - Another user booked one of the slots.
 - A hold expired.
 - The underlying schedule changed between search and confirmation.
+- The clicked option was from a cached historical search result.
 
 Resolution:
 
+- The system now automatically rescans for fresh plans when stale options are detected.
 - Refresh the grid using the availability refresh endpoint.
 - Offer fresh complete family plans derived from the original request.
 - Retire stale proposals and present updated family options.
@@ -605,32 +686,59 @@ Resolution:
 **Section sources**
 - [scheduling.py API:365-453](file://backend/app/api/scheduling.py#L365-L453)
 - [scheduling.py:2511-2545](file://backend/app/services/scheduling.py#L2511-L2545)
+- [scheduling.py:2834-2860](file://backend/app/services/scheduling.py#L2834-L2860)
 
 ### Request Revisions and Lost Context
+**Updated** Enhanced state management provides better context preservation:
+
 Symptoms:
 
 - After changing preferences, the system loses the family context.
 - Old holds are not properly superseded.
+- Request state is inconsistent across sessions.
 
 Likely causes:
 
 - The request shape changed, creating a new revision.
 - The client did not preserve `request_id` and `option_identity`.
+- Transaction boundaries were not properly maintained.
 
 Resolution:
 
 - Always persist and resend `request_id` with family option selections.
 - Use `_remember_request` to detect changes and retire incompatible proposals.
 - Treat a new request id as a new coordination context.
+- The system now ensures request state is committed before proposal creation.
 
 **Section sources**
 - [scheduling.py:137-191](file://backend/app/services/scheduling.py#L137-L191)
+- [scheduling.py:2780-2801](file://backend/app/services/scheduling.py#L2780-L2801)
+
+### Replay Scenarios and Concurrent Requests
+**New** The system now handles replay scenarios and concurrent requests more robustly:
+
+Symptoms:
+
+- Multiple clicks on the same family option create duplicate proposals.
+- Concurrent requests cause conflicts or lost updates.
+- Repeated selections don't return the existing proposal.
+
+Resolution:
+
+- The system recognizes repeated selections as replays rather than new holds.
+- Transaction boundaries prevent double-booking attempts.
+- Existing proposals are returned when the same option is selected again.
+- Better conflict resolution for concurrent family booking operations.
+
+**Section sources**
+- [scheduling.py:2802-2822](file://backend/app/services/scheduling.py#L2802-L2822)
+- [scheduling.py:2862-2879](file://backend/app/services/scheduling.py#L2862-L2879)
 
 ## Conclusion
 Family booking coordination is built around three principles:
 
 1. **Atomic family plans**: Only complete plans are presented and confirmed, so every family member is booked together.
-2. **Per-person constraints**: Each member’s appointment type, provider preference, and existing appointments are respected independently.
+2. **Per-person constraints**: Each member's appointment type, provider preference, and existing appointments are respected independently.
 3. **Persistent request context**: `_remember_request` keeps the family booking intent alive across turns, revisions, and refreshes.
 
-Together, these mechanisms allow the system to offer realistic coordinated schedules while protecting privacy, avoiding overbooking, and providing clear error paths when permissions or availability are insufficient.
+Recent improvements have significantly enhanced the system's reliability through better transaction handling, improved state persistence, and robust edge case management. These enhancements ensure that family bookings remain atomic and consistent even under concurrent access, stale data conditions, and complex scheduling scenarios. Together, these mechanisms allow the system to offer realistic coordinated schedules while protecting privacy, avoiding overbooking, and providing clear error paths when permissions or availability are insufficient.

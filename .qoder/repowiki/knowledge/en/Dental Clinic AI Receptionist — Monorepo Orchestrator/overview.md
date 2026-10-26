@@ -1,1 +1,0 @@
-Top-level orchestrator that composes the FastAPI backend and React frontend into a single Docker Compose stack with shared data, dev hot-reload overlay, and pre-push quality gates.

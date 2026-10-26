@@ -18,10 +18,10 @@ The frontend is a Vite + React app styled with plain CSS (no Tailwind, no CSS-in
 
 ## Key Files
 
-- `frontend/src/styles/global.css` — the canonical token surface: color ramp (`--c-0`..`--c-900`), accent (`--accent`, `--clay`), status triplets (`--ok-*`, `--warn-*`, `--danger-*`), semantic aliases (`--bg`, `--surface`, `--border`, `--text`), radii (`--r-sm/md/lg`), spacing scale (`--s-1`..`--s-16`), fonts (`--font`, `--display`, `--mono`), and global base styles for buttons, inputs, cards, pills, stats, skeletons, and legacy overview layout.
-- `frontend/src/styles/chat.css` — patient chat thread layout (sidebar + header + scrollable thread + sticky composer) using the shared tokens; defines `.chat`, `.practice`, `.msg`, `.composer`, `.prompts`, and responsive breakpoints at 980px / 640px.
-- `frontend/src/styles/cards.css` — interactive card variants rendered inside messages (slots, proposals, confirmations, family, handoff); class prefix `cardx` to distinguish from the legacy `.card` in `global.css`.
-- `frontend/src/pages/staff/staff.css` — staff dashboard scoped under the `sd-` namespace so it cannot leak into the patient chat; documents its own layout contract (232px fixed rail, fluid main column, 1200px measure, white panels with hairline borders).
+- `frontend/src/styles/global.css` -- the canonical token surface: color ramp (`--c-0`..`--c-900`), accent (`--accent`, `--clay`), status triplets (`--ok-*`, `--warn-*`, `--danger-*`), semantic aliases (`--bg`, `--surface`, `--border`, `--text`), radii (`--r-sm/md/lg`), spacing scale (`--s-1`..`--s-16`), fonts (`--font`, `--display`, `--mono`), and global base styles for buttons, inputs, cards, pills, stats, skeletons, and legacy overview layout.
+- `frontend/src/styles/chat.css` -- patient chat thread layout (sidebar + header + scrollable thread + sticky composer) using the shared tokens; defines `.chat`, `.practice`, `.msg`, `.composer`, `.prompts`, and responsive breakpoints at 980px / 640px.
+- `frontend/src/styles/cards.css` -- interactive card variants rendered inside messages (slots, proposals, confirmations, family, handoff); class prefix `cardx` to distinguish from the legacy `.card` in `global.css`.
+- `frontend/src/pages/staff/staff.css` -- staff dashboard scoped under the `sd-` namespace so it cannot leak into the patient chat; documents its own layout contract (232px fixed rail, fluid main column, 1200px measure, white panels with hairline borders).
 
 ## Architecture and Conventions
 
@@ -39,7 +39,7 @@ The frontend is a Vite + React app styled with plain CSS (no Tailwind, no CSS-in
    - Status semantics: ok/warn/danger are used for state, not decoration.
    - Spacing: explicit 4px base scale (`--s-1 = 4px`).
    - Radii: 3-step scale (`--r-sm: 8px`, `--r-md: 12px`, `--r-lg: 16px`).
-   - Cards: "white panel with a single hairline border — no shadows on static surfaces" (`staff.css` header comment).
+   - Cards: "white panel with a single hairline border -- no shadows on static surfaces" (`staff.css` header comment).
    - Chat visual language: "light canvas with the conversation raised off it. Tinted surface steps rather than shadows; one accent used for the send control and the patient's own turns."
 
 5. **Responsive strategy:** Media queries are written inline in each feature sheet rather than via a breakpoint system. Common thresholds observed: 720px (legacy overview), 640px (chat/mobile), 980px (hide practice sidebar), and 1200px max-width for the staff main column.
@@ -61,4 +61,4 @@ The frontend is a Vite + React app styled with plain CSS (no Tailwind, no CSS-in
 - **Enforced constraints:**
   - There is no linter or schema enforcing these conventions; enforcement is manual/code-review based.
   - The only build-time constraint relevant to styling is that the project runs `tsc --noEmit && vite build`, which does not validate CSS.
-  - The `sd-` namespace in `staff.css` is a convention, not a CSS scoping mechanism — it relies on authors choosing the prefix.
+  - The `sd-` namespace in `staff.css` is a convention, not a CSS scoping mechanism -- it relies on authors choosing the prefix.

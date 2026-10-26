@@ -1,0 +1,6 @@
+- Section components drive fetching through `useStaffQuery(key, loader)` with a stable string key rather than ad-hoc useEffect calls.
+- Mutations go through `useStaffMutation`, which surfaces `{ pending, error, clearError, run }` and broadcasts success via `notifyStaffDataChanged` instead of throwing.
+- Errors are surfaced to users through shared `ErrorState` / `EmptyState` / `SkeletonRows` components from `StaffUi.tsx` instead of inline try/catch blocks.
+- Navigation between views updates local state plus the URL hash (`#/{view}`) rather than using a routing library.
+- Authentication state is read from `useStaffAuth()` and the session is refreshed on tab focus to detect expired or revoked sessions immediately.
+- CSS class names use the `sd-` BEM-style prefix (e.g. `sd-shell`, `sd-sidebar`, `sd-nav__item--active`) to scope styles within the dashboard.

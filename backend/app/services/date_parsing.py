@@ -2,11 +2,15 @@
 
 The model *extracts* what the patient said; this module *resolves* it. No date
 arithmetic here trusts the model: relative phrases are resolved against the
-clinic's current date in ``America/Los_Angeles`` (never the server's timezone),
-and every time-of-day window is clamped to clinic business hours afterwards.
+resolved clinic's current date in *its* timezone (never the server's), and every
+time-of-day window is clamped to that clinic's business hours afterwards.
 
 Design rules
 ------------
+* **The clinic is a parameter, never an assumption.** "Morning", "late" and
+  "after 7 PM" all mean different things at a practice that closes at 5, so every
+  entry point takes a ``SchedulingConfig``. A default here would quietly answer
+  every tenant with one clinic's hours.
 * **Impossible beats ambiguous.** "Sunday" is not ambiguous, it is closed. A
   past date stays past instead of being silently rolled forward.
 * **Ambiguity is explicit.** "Next Tuesday" is flagged when two readings are
@@ -24,8 +28,13 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from app.services.date_phrases import WEEKDAY_INDEX, WEEKDAY_NAMES, resolve_phrase, weekday_index
-from app.timeutil import CLOSE_TIME, OPEN_TIME, clinic_today
+from app.services.date_phrases import (
+    WEEKDAY_INDEX,
+    WEEKDAY_NAMES,
+    resolve_phrase,
+    weekday_index,
+)
+from app.timeutil import SchedulingConfig, TimeWindow
 
 # Bounded scanning so a confused model can never request a year of slots.
 MAX_SEARCH_DAYS = 120
@@ -37,25 +46,21 @@ def _minute_of(hour: int, minute: int = 0) -> int:
     return hour * 60 + minute
 
 
-OPEN_MINUTE = _minute_of(OPEN_TIME.hour, OPEN_TIME.minute)
-CLOSE_MINUTE = _minute_of(CLOSE_TIME.hour, CLOSE_TIME.minute)
-
-
-@dataclass(frozen=True)
-class TimeWindow:
-    """A same-day time-of-day range, in whole minutes from midnight."""
-
-    start_minute: int
-    end_minute: int
-    label: str
-
-    def contains(self, moment: datetime) -> bool:
-        return self.start_minute <= _minute_of(moment.hour, moment.minute) < self.end_minute
-
-
-MORNING = TimeWindow(OPEN_MINUTE, 12 * 60, "morning (before noon)")
-AFTERNOON = TimeWindow(12 * 60, 17 * 60, "afternoon (12-5 PM)")
-LATE = TimeWindow(16 * 60, CLOSE_MINUTE, "late afternoon")
+# ``TimeWindow`` is re-exported from ``app.timeutil`` rather than redefined here:
+# the same object is what ``SchedulingConfig`` produces for a clinic's morning and
+# what the availability engine filters slots against, and two definitions would
+# invite the two to drift apart.
+__all__ = [
+    "DEFAULT_SEARCH_DAYS",
+    "MAX_SEARCH_DAYS",
+    "MAX_WINDOW_DAYS",
+    "ResolvedPreferences",
+    "TimeWindow",
+    "WEEKDAY_INDEX",
+    "WEEKDAY_NAMES",
+    "resolve_preferences",
+    "resolve_time_window",
+]
 
 
 @dataclass
@@ -131,61 +136,81 @@ def _parse_clock(raw: str) -> tuple[int, int] | None:
     return hour, minute
 
 
-def _clamp(start_minute: int, end_minute: int, label: str) -> TimeWindow | None:
-    """Fit a window into business hours; None when nothing overlaps."""
-    lo, hi = max(start_minute, OPEN_MINUTE), min(end_minute, CLOSE_MINUTE)
+def _clamp(
+    config: SchedulingConfig, start_minute: int, end_minute: int, label: str
+) -> TimeWindow | None:
+    """Fit a window into *this clinic's* business hours; None if nothing overlaps."""
+    lo, hi = max(start_minute, config.open_minute), min(end_minute, config.close_minute)
     if hi <= lo:
         return None
-    return TimeWindow(lo, hi, label if (lo, hi) == (start_minute, end_minute) else f"{label} (clinic hours)")
+    return TimeWindow(
+        lo, hi, label if (lo, hi) == (start_minute, end_minute) else f"{label} (clinic hours)"
+    )
 
 
-def resolve_time_window(raw: str) -> TimeWindow | None:
-    """Map one time-of-day phrase to a clinic-hours window."""
+def resolve_time_window(raw: str, config: SchedulingConfig) -> TimeWindow | None:
+    """Map one time-of-day phrase to a window on this clinic's day.
+
+    The named presets are read from the config rather than constructed at import
+    time: "late afternoon" ends at *this* practice's closing minute, and
+    "afternoon" has no part beyond it.
+    """
     text = re.sub(r"\s+", " ", (raw or "").strip().lower())
     text = re.sub(r"\s+only$", "", text)
     if not text:
         return None
 
+    morning = config.morning_window
+    afternoon = config.afternoon_window
+    late = config.late_window
+
     exact = {
-        "morning": MORNING,
-        "mornings": MORNING,
-        "early": MORNING,
-        "early morning": MORNING,
-        "in the morning": MORNING,
-        "before lunch": MORNING,
-        "before noon": MORNING,
-        "am": MORNING,
-        "afternoon": AFTERNOON,
-        "afternoons": AFTERNOON,
-        "in the afternoon": AFTERNOON,
-        "after lunch": AFTERNOON,
-        "pm": AFTERNOON,
-        "late": LATE,
-        "later in the day": LATE,
-        "late afternoon": LATE,
-        "end of day": LATE,
-        "evening": LATE,
-        "evenings": LATE,
-        "after work": LATE,
+        "morning": morning,
+        "mornings": morning,
+        "early": morning,
+        "early morning": morning,
+        "in the morning": morning,
+        "before lunch": morning,
+        "before noon": morning,
+        "am": morning,
+        "afternoon": afternoon,
+        "afternoons": afternoon,
+        "in the afternoon": afternoon,
+        "after lunch": afternoon,
+        "pm": afternoon,
+        "late": late,
+        "later in the day": late,
+        "late afternoon": late,
+        "end of day": late,
+        "evening": config.evening_window,
+        "evenings": config.evening_window,
+        "after work": config.evening_window,
     }
     if text in exact:
         return exact[text]
 
     if text in {"around lunch", "at lunch", "lunchtime"}:
-        return _clamp(_minute_of(11, 30), _minute_of(13, 30), "around lunch")
+        return _clamp(config, _minute_of(11, 30), _minute_of(13, 30), "around lunch")
 
     after = re.fullmatch(r"(?:any\s+time\s+)?after\s+([\w: ]+)", text)
     if after:
         clock = _parse_clock(after.group(1))
         if clock:
-            return _clamp(_minute_of(*clock), CLOSE_MINUTE, f"after {after.group(1).strip()}")
+            return _clamp(
+                config, _minute_of(*clock), config.close_minute, f"after {after.group(1).strip()}"
+            )
         return None
 
     before = re.fullmatch(r"(?:any\s+time\s+)?before\s+([\w: ]+)", text)
     if before:
         clock = _parse_clock(before.group(1))
         if clock:
-            return _clamp(OPEN_MINUTE, _minute_of(*clock), f"before {before.group(1).strip()}")
+            return _clamp(
+                config,
+                config.open_minute,
+                _minute_of(*clock),
+                f"before {before.group(1).strip()}",
+            )
         return None
 
     between = re.fullmatch(
@@ -196,21 +221,8 @@ def resolve_time_window(raw: str) -> TimeWindow | None:
         end_clock = _parse_clock(between.group(2))
         if start_clock and end_clock:
             label = f"{between.group(1).strip()}-{between.group(2).strip()}"
-            return _clamp(_minute_of(*start_clock), _minute_of(*end_clock), label)
+            return _clamp(config, _minute_of(*start_clock), _minute_of(*end_clock), label)
     return None
-
-
-__all__ = [
-    "DEFAULT_SEARCH_DAYS",
-    "MAX_SEARCH_DAYS",
-    "MAX_WINDOW_DAYS",
-    "ResolvedPreferences",
-    "TimeWindow",
-    "WEEKDAY_INDEX",
-    "WEEKDAY_NAMES",
-    "resolve_preferences",
-    "resolve_time_window",
-]
 
 
 def _normalized_phrases(values: list[str] | None) -> list[str]:
@@ -218,6 +230,7 @@ def _normalized_phrases(values: list[str] | None) -> list[str]:
 
 
 def resolve_preferences(
+    config: SchedulingConfig,
     *,
     start_date: str | None = None,
     date_phrases: list[str] | None = None,
@@ -234,8 +247,11 @@ def resolve_preferences(
     ``weekdays``/``exclude_weekdays`` narrow whichever of those applies and never
     widen it. A phrase that cannot be read is recorded so the assistant can ask
     again instead of quietly searching a different window.
+
+    ``config`` is positional and required: it decides what "today" means, which
+    days the phrases resolve against, and where every window gets clamped.
     """
-    current = today or clinic_today()
+    current = today or config.today()
     resolved = ResolvedPreferences(today=current, provider_name=(provider_name or None))
 
     # --- explicit date phrases ---------------------------------------------
@@ -258,7 +274,7 @@ def resolve_preferences(
         ):
             resolved.fallback_allowed = True
             continue
-        outcome = resolve_phrase(normalized, current)
+        outcome = resolve_phrase(normalized, current, config)
         resolved.warnings.extend(outcome.warnings)
         if outcome.past:
             resolved.past_rejected = True
@@ -284,7 +300,7 @@ def resolve_preferences(
             else resolved.days[-1]
         )
         _apply_weekday_filter(resolved, weekdays, exclude_weekdays)
-        _apply_windows(resolved, time_windows)
+        _apply_windows(resolved, config, time_windows)
         return resolved
 
     # --- range mode ---------------------------------------------------------
@@ -310,7 +326,7 @@ def resolve_preferences(
     resolved.scan_end = anchor + timedelta(days=span - 1)
 
     _apply_weekday_filter(resolved, weekdays, exclude_weekdays)
-    _apply_windows(resolved, time_windows)
+    _apply_windows(resolved, config, time_windows)
     return resolved
 
 
@@ -345,9 +361,11 @@ def _apply_weekday_filter(
         resolved.days = [day for day in resolved.days if day.weekday() in named]
 
 
-def _apply_windows(resolved: ResolvedPreferences, time_windows: list[str] | None) -> None:
+def _apply_windows(
+    resolved: ResolvedPreferences, config: SchedulingConfig, time_windows: list[str] | None
+) -> None:
     for raw in _normalized_phrases(time_windows):
-        window = resolve_time_window(raw)
+        window = resolve_time_window(raw, config)
         if window is None:
             resolved.warnings.append(f"I couldn't read '{raw}' as a time of day.")
             continue

@@ -6,6 +6,7 @@ from datetime import date, timedelta
 
 from app.services.date_parsing import resolve_preferences, resolve_time_window
 from app.services.date_phrases import resolve_phrase
+from tests.support import TEST_CONFIG
 
 # 2026-10-07 is a Wednesday; 2026-10-09 a Friday.
 WED = date(2026, 10, 7)
@@ -14,7 +15,7 @@ SAT = date(2026, 10, 10)
 
 
 def _days(phrase: str, today: date) -> list[date]:
-    return resolve_phrase(phrase, today).days
+    return resolve_phrase(phrase, today, TEST_CONFIG).days
 
 
 def test_tomorrow_from_wednesday():
@@ -29,11 +30,11 @@ def test_next_tuesday_from_wednesday_is_six_days_out():
 def test_next_tuesday_at_the_weekend_is_imminent():
     # On a Saturday "next Tuesday" is three days out; no reading is plausible
     # enough to need clarification (unlike "next Monday", which is flagged).
-    result = resolve_phrase("next tuesday", SAT)
+    result = resolve_phrase("next tuesday", SAT, TEST_CONFIG)
     assert result.days == [date(2026, 10, 13)]
     assert result.ambiguous is False
 
-    monday = resolve_phrase("next monday", SAT)
+    monday = resolve_phrase("next monday", SAT, TEST_CONFIG)
     # On a Saturday, "next Monday" is two days away to most people and nine to
     # others, so it is flagged and the assistant confirms instead of guessing.
     assert monday.ambiguous is True
@@ -49,7 +50,7 @@ def test_bare_weekday_that_already_passed_rolls_to_next_week():
 
 
 def test_bare_weekday_equal_to_today_is_flagged():
-    result = resolve_phrase("Wednesday", WED)
+    result = resolve_phrase("Wednesday", WED, TEST_CONFIG)
     assert result.ambiguous is True
     assert result.days == [WED]
 
@@ -81,11 +82,11 @@ def test_next_sunday_is_closed_not_ambiguous():
 
 def test_stated_year_is_taken_literally():
     # A past year is past, not silently rolled to the next year.
-    past = resolve_phrase("march 5 2026", WED)
+    past = resolve_phrase("march 5 2026", WED, TEST_CONFIG)
     assert past.past is True and past.days == []
-    assert resolve_phrase("march 5 2027", WED).days == [date(2027, 3, 5)]
+    assert resolve_phrase("march 5 2027", WED, TEST_CONFIG).days == [date(2027, 3, 5)]
     # Without a year, the next occurrence is used.
-    assert resolve_phrase("march 5", WED).days == [date(2027, 3, 5)]
+    assert resolve_phrase("march 5", WED, TEST_CONFIG).days == [date(2027, 3, 5)]
 
 
 def test_iso_and_slash_dates():
@@ -99,32 +100,32 @@ def test_day_month_order_is_inferred_when_unambiguous():
 
 
 def test_genuinely_ambiguous_slash_date_is_flagged():
-    result = resolve_phrase("03/04", WED)
+    result = resolve_phrase("03/04", WED, TEST_CONFIG)
     assert result.ambiguous is True
     assert result.days == [date(2027, 3, 4)]
 
 
 def test_ordinal_only_day_is_ambiguous():
-    result = resolve_phrase("the 12th", WED)
+    result = resolve_phrase("the 12th", WED, TEST_CONFIG)
     assert result.ambiguous is True
     assert result.days == []
 
 
 def test_past_date_is_rejected_not_rolled_forward():
-    result = resolve_phrase("2026-01-05", WED)
+    result = resolve_phrase("2026-01-05", WED, TEST_CONFIG)
     assert result.past is True
     assert result.days == []
     assert result.clarification
 
 
 def test_impossible_date_is_reported():
-    result = resolve_phrase("2026-02-30", WED)
+    result = resolve_phrase("2026-02-30", WED, TEST_CONFIG)
     assert result.days == []
     assert result.unreadable or result.warnings
 
 
 def test_any_day_except_wednesday_excludes_wednesday():
-    resolved = resolve_preferences(exclude_weekdays=["Wednesday"], today=WED)
+    resolved = resolve_preferences(TEST_CONFIG, exclude_weekdays=["Wednesday"], today=WED)
     assert resolved.weekday_filter is not None
     assert 2 not in resolved.weekday_filter
     assert resolved.accepts_day(date(2026, 10, 8)) is True
@@ -133,33 +134,33 @@ def test_any_day_except_wednesday_excludes_wednesday():
 
 def test_weekends_only_never_includes_a_weekday():
     # "weekends only" is modelled as weekdays=["Saturday"] (Sunday is closed).
-    named = resolve_preferences(weekdays=["Saturday"], range_days=21, today=WED)
+    named = resolve_preferences(TEST_CONFIG, weekdays=["Saturday"], range_days=21, today=WED)
     assert named.weekday_filter == {5}
     assert named.accepts_day(date(2026, 10, 9)) is False
     assert named.accepts_day(date(2026, 10, 10)) is True
 
 
 def test_window_phrases():
-    morning = resolve_time_window("morning only")
+    morning = resolve_time_window("morning only", TEST_CONFIG)
     assert morning is not None
     assert morning.start_minute == 8 * 60
     assert morning.end_minute == 12 * 60
 
-    after_three = resolve_time_window("after 3 PM")
+    after_three = resolve_time_window("after 3 PM", TEST_CONFIG)
     assert after_three.start_minute == 15 * 60
     assert after_three.end_minute == 18 * 60
 
-    before_lunch = resolve_time_window("before lunch")
+    before_lunch = resolve_time_window("before lunch", TEST_CONFIG)
     assert before_lunch.end_minute == 12 * 60
 
-    clamped = resolve_time_window("after 7 PM")
+    clamped = resolve_time_window("after 7 PM", TEST_CONFIG)
     assert clamped is None  # clinic closes at 6 PM: no overlap, not a silent widen
 
 
 def test_window_and_day_filters_combine():
     from datetime import datetime
 
-    resolved = resolve_preferences(
+    resolved = resolve_preferences(TEST_CONFIG, 
         date_phrases=["this coming Friday"],
         time_windows=["after 3 PM"],
         today=WED,
@@ -170,13 +171,13 @@ def test_window_and_day_filters_combine():
 
 
 def test_past_start_date_is_reported_but_search_stays_future():
-    resolved = resolve_preferences(start_date=(WED - timedelta(days=3)).isoformat(), today=WED)
+    resolved = resolve_preferences(TEST_CONFIG, start_date=(WED - timedelta(days=3)).isoformat(), today=WED)
     assert resolved.past_rejected is True
     assert resolved.scan_start == WED
 
 
 def test_unreadable_phrase_surfaces_a_warning():
-    resolved = resolve_preferences(date_phrases=["sometime"], today=WED)
+    resolved = resolve_preferences(TEST_CONFIG, date_phrases=["sometime"], today=WED)
     assert resolved.days == []
     assert resolved.warnings
 
@@ -190,12 +191,12 @@ def test_any_day_is_flexible_default_window():
         "I am fine with any day",
         "any day to schedule",
     ):
-        result = resolve_phrase(phrase, WED)
+        result = resolve_phrase(phrase, WED, TEST_CONFIG)
         assert result.days == []
         assert result.unreadable is False
         assert result.warnings == []
 
-        resolved = resolve_preferences(date_phrases=[phrase], today=WED)
+        resolved = resolve_preferences(TEST_CONFIG, date_phrases=[phrase], today=WED)
         assert resolved.days == []
         assert resolved.warnings == []
         assert resolved.fallback_allowed is True

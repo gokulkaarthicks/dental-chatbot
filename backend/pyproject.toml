@@ -3,7 +3,7 @@ line-length = 99
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+select = ["E", "F", "I", "B", "UP", "TID"]
 ignore = [
     # FastAPI declares dependencies via Depends() in argument defaults by design.
     "B008",
@@ -14,10 +14,28 @@ ignore = [
     "E501",
 ]
 
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Clinic facts are tenant rows now. ``app.seed_templates`` holds them as Python
+# literals for the *seeding path only*; importing it anywhere else would pin every
+# clinic to one tenant's answers at import time, which is exactly the failure mode
+# multi-tenancy is meant to remove. Runtime reads go through ``app.tenancy``.
+"app.seed_templates".msg = "seed_templates is for seeding only. Read clinic facts from the resolved ClinicContext (app/tenancy.py) instead."
+# The pre-tenancy scheduling constants survive solely to build tenant #1's row and
+# to backfill a database written before the ``clinics`` table existed. Request code
+# must use the tenant's own SchedulingConfig.
+"app.timeutil.LEGACY_CLINIC_SCHEDULING".msg = "Use the resolved tenant's SchedulingConfig (clinic.config), not the legacy single-clinic grid."
+
 [tool.ruff.lint.per-file-ignores]
 # Tests mirror production by importing fixtures/helpers they only touch via
 # pytest fixtures; dropping those imports would break the tests, not the code.
 "tests/*" = ["F401"]
+# The seeding path is the one allowed reader of the literal clinic templates.
+"app/seed_templates.py" = ["TID251"]
+"app/seed_tenants.py" = ["TID251"]
+"app/seed_fixtures.py" = ["TID251"]
+"app/services/seed.py" = ["TID251"]
+"app/cli.py" = ["TID251"]
+"app/migrations.py" = ["TID251"]
 
 [tool.pytest.ini_options]
 # ``tests`` is on the path for the bare ``from conftest import ...`` in the

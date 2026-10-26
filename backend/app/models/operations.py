@@ -13,18 +13,21 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin, UTCDateTime
+from app.models.base import Base, ClinicScoped, TimestampMixin, UTCDateTime
 
 
-class IdempotencyRecord(Base):
+class IdempotencyRecord(Base, ClinicScoped):
     """Deduplicates side-effecting requests (e.g. a retried booking).
 
     ``scope`` namespaces keys per operation, so the same client key can be reused
-    for different endpoints without collisions.
+    for different endpoints without collisions. The clinic is part of the
+    namespace: one dashboard driving two clinics may legitimately send the same
+    ``Idempotency-Key`` to both, and each must replay its own result.
     """
 
     __tablename__ = "idempotency_records"
@@ -47,13 +50,13 @@ class IdempotencyRecord(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime())
 
     __table_args__ = (
-        Index("uq_idempotency_scope_key", "scope", "key", unique=True),
+        Index("uq_idempotency_scope_key", "clinic_id", "scope", "key", unique=True),
         Index("ix_idempotency_expires", "expires_at"),
         CheckConstraint("state IN ('in_flight', 'complete')", name="ck_idempotency_state"),
     )
 
 
-class AuditRecord(Base):
+class AuditRecord(Base, ClinicScoped):
     """Append-only record of state changes. Never updated or deleted at runtime."""
 
     __tablename__ = "audit_records"
@@ -83,23 +86,33 @@ class AuditRecord(Base):
         Index("ix_audit_occurred", "occurred_at"),
         Index("ix_audit_action", "action"),
         Index("ix_audit_entity", "entity_type", "entity_id"),
+        Index("ix_audit_clinic_occurred", "clinic_id", "occurred_at"),
     )
 
 
 class AppMetadata(Base):
-    """Small key/value store for application-level state.
+    """Small key/value store for *per-clinic* application state.
 
     Holds ``reset_generation`` (a UUID regenerated on every demo reset, consumed
     by the browser to discard stale conversation/session state), ``reset_count``,
     and ``last_seeded_at``.
 
+    The primary key is ``(clinic_id, key)`` rather than ``key`` alone: resetting
+    one clinic rotates *its* generation only, so another clinic's open chats are
+    not invalidated by someone else's ``make reset-demo``. The one genuinely
+    global key, ``schema_version``, is written by an unscoped session during
+    bootstrap and read before any tenant exists.
+
     ``public`` marks keys that are safe to expose through ``/api/demo/status``.
-    Patient-identifying counters (e.g. ``phase2_patients_registered``) are stored
+    Patient-identifying counters (e.g. ``patients_registered_total``) are stored
     here too, but with ``public = false`` so they never leave the server.
     """
 
     __tablename__ = "app_metadata"
 
+    clinic_id: Mapped[int] = mapped_column(
+        ForeignKey("clinics.id", ondelete="CASCADE"), primary_key=True
+    )
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
@@ -108,18 +121,25 @@ class AppMetadata(Base):
     )
 
 
-class SeedManifest(Base, TimestampMixin):
+class SeedManifest(Base, ClinicScoped, TimestampMixin):
     """Records which fixture rows this application created, for safe reseeding.
 
     Matching happens on the natural ``seed_key`` of each table; this manifest is
     the summary used by ``/api/demo/status`` and makes it easy to see, at a
     glance, that the seed is reproducible and was applied exactly once.
+
+    ``fixture_set`` is unique per clinic, because every tenant applies a set with
+    the same name.
     """
 
     __tablename__ = "seed_manifests"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    fixture_set: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    fixture_set: Mapped[str] = mapped_column(String(64), nullable=False)
     fixture_version: Mapped[int] = mapped_column(Integer, nullable=False)
     checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     applied_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("clinic_id", "fixture_set", name="uq_seed_manifest_clinic_set"),
+    )

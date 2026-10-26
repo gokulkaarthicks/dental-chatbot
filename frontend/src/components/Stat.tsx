@@ -1,3 +1,10 @@
+/**
+ * A labelled figure and the grid it sits in.
+ *
+ * Rendered as `<dl>`/`<dt>`/`<dd>`, so a screen reader reads each number with
+ * its label instead of announcing a loose string of counts.
+ */
+
 type StatProps = {
   label: string;
   value: number | string;

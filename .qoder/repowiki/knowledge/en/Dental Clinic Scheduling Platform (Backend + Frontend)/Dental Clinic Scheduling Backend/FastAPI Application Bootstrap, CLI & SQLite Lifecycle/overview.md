@@ -1,0 +1,1 @@
+Assembles the FastAPI application, wires observability middleware and CORS, bootstraps a SQLite database with additive migrations and demo fixtures, and exposes an argparse CLI plus a Uvicorn entrypoint.

@@ -16,10 +16,12 @@ import { staffApi, type StaffAlert, type StaffAlertStatus } from "../../../api/s
 import { Button } from "../../../components/Button";
 import {
   ALERT_KIND_LABELS,
-  alertStatusBadge,
   describeAction,
   fullTimestamp,
   relativeTime,
+} from "../../../lib/staffFormat";
+import {
+  alertStatusBadge,
   severityBadge,
   EmptyState,
   ErrorState,

@@ -1,4 +1,4 @@
-"""Staff-side triage of alerts and pending requests (Phase 4).
+"""Staff-side triage of alerts and pending requests.
 
 Two queues, two questions
 -------------------------
@@ -43,6 +43,7 @@ from typing import Any
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.db import require_clinic_id
 from app.models import (
     AlertKind,
     AlertStatus,
@@ -58,7 +59,7 @@ from app.models import (
 )
 from app.services import audit
 from app.services.transactions import WriteTransactionError, write_transaction
-from app.timeutil import clinic_now
+from app.tenancy import ClinicContext
 
 logger = logging.getLogger(__name__)
 
@@ -322,17 +323,21 @@ def _activity(session: Session, entity_type: str, entity_id: int) -> list[dict[s
     ]
 
 
-def summary_counts(session: Session, *, today: date | None = None) -> dict[str, Any]:
+def summary_counts(session: Session, clinic: ClinicContext, *, today: date | None = None) -> dict[str, Any]:
     """Counts for the dashboard tiles. One round-trip, no row loading.
 
-    "Today" is the *clinic* day. Appointment timestamps are stored as naive
-    clinic-local values, so the bounds must be naive too: binding an aware UTC
-    value into SQLite sorts before every stored local timestamp and would
-    silently undercount the day.
+    "Today" is the *clinic* day, and the counts are for *this* clinic. Both
+    matter: appointment timestamps are stored as naive clinic-local values, so
+    binding an aware UTC value into SQLite sorts before every stored local
+    timestamp and would silently undercount the day, and an unfiltered
+    ``func.count`` is a projection the ORM tenant net does not rewrite, so it
+    would answer with every practice's bookings.
     """
-    day = today or clinic_now().date()
+    config = clinic.config
+    day = today or config.today()
     day_start = datetime.combine(day, datetime.min.time())
     day_end = day_start + timedelta(days=1)
+    bound = require_clinic_id(session)
 
     def count(statement) -> int:
         return int(session.scalar(statement) or 0)
@@ -341,30 +346,38 @@ def summary_counts(session: Session, *, today: date | None = None) -> dict[str, 
     return {
         "appointments_today": count(
             select(func.count(Appointment.id)).where(
+                Appointment.clinic_id == bound,
                 Appointment.starts_at >= day_start,
                 Appointment.starts_at < day_end,
                 Appointment.status != "cancelled",
             )
         ),
         "appointments_upcoming": count(
-            select(func.count(Appointment.id)).where(booked, Appointment.starts_at >= day_start)
+            select(func.count(Appointment.id)).where(
+                Appointment.clinic_id == bound, booked, Appointment.starts_at >= day_start
+            )
         ),
         "open_alerts": count(
-            select(func.count(StaffAlert.id)).where(StaffAlert.status != AlertStatus.RESOLVED.value)
+            select(func.count(StaffAlert.id)).where(
+                StaffAlert.clinic_id == bound, StaffAlert.status != AlertStatus.RESOLVED.value
+            )
         ),
         "urgent_alerts": count(
             select(func.count(StaffAlert.id)).where(
+                StaffAlert.clinic_id == bound,
                 StaffAlert.status != AlertStatus.RESOLVED.value,
                 StaffAlert.severity.in_(["urgent", "high"]),
             )
         ),
         "pending_requests": count(
             select(func.count(PendingRequest.id)).where(
-                PendingRequest.status != RequestStatus.RESOLVED.value
+                PendingRequest.clinic_id == bound,
+                PendingRequest.status != RequestStatus.RESOLVED.value,
             )
         ),
         "approvals_required": count(
             select(func.count(PendingRequest.id)).where(
+                PendingRequest.clinic_id == bound,
                 PendingRequest.status != RequestStatus.RESOLVED.value,
                 PendingRequest.request_type.in_(sorted(APPROVAL_REQUEST_TYPES)),
             )

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter
 
-from app.db import get_db
+from app.api.deps import CurrentClinic, DbSession
 from app.schemas import DemoStatusResponse
 from app.services.demo import build_demo_status
 
@@ -17,6 +16,11 @@ router = APIRouter(tags=["demo"])
     response_model=DemoStatusResponse,
     summary="Safe fixture counts and reset generation",
 )
-def demo_status(session: Session = Depends(get_db)) -> DemoStatusResponse:
-    """Aggregate counts only. No patient identifiers are ever returned here."""
-    return DemoStatusResponse(**build_demo_status(session))
+def demo_status(session: DbSession, clinic: CurrentClinic) -> DemoStatusResponse:
+    """Aggregate counts for one clinic. No patient identifiers are returned.
+
+    The counts are all tenant rows (slots, appointments, conversations), so the
+    tenant has to be resolved before they mean anything: an unbound session would
+    answer with every clinic's fixtures summed together.
+    """
+    return DemoStatusResponse(**build_demo_status(session, clinic))

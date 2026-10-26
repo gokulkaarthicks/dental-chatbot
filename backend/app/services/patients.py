@@ -18,10 +18,9 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.clinic import SELF_PAY_LABEL
 from app.models import Patient, utcnow
 from app.services import audit, generations
-from app.timeutil import clinic_today
+from app.tenancy import ClinicContext
 from app.validation import (
     normalize_insurance,
     normalize_name,
@@ -79,6 +78,7 @@ class RegistrationDraft:
 
 
 def normalize_registration_fields(
+    clinic: ClinicContext,
     *,
     full_name: str | None,
     phone: str | None,
@@ -86,9 +86,16 @@ def normalize_registration_fields(
     insurance_provider: str | None,
     required: tuple[str, ...] = REGISTRATION_FIELDS,
 ) -> RegistrationDraft:
+    """Validate one registration payload *for one clinic*.
+
+    ``clinic`` is required, not optional: a plan tenant A accepts is simply not a
+    plan tenant B takes, and "today" is the date of birth has to be measured
+    against the practice's own timezone rather than the server's.
+    """
+    accepted = sorted(clinic.accepted_plan_names)
     draft = RegistrationDraft()
     if date_of_birth is not None:
-        parsed_dob = parse_date_of_birth(date_of_birth, today=clinic_today())
+        parsed_dob = parse_date_of_birth(date_of_birth, today=clinic.config.today())
         draft.date_ambiguous = parsed_dob.ambiguous
 
     if full_name is not None:
@@ -112,7 +119,7 @@ def normalize_registration_fields(
         draft.issues.add("phone", "I still need a phone number.")
 
     if date_of_birth is not None:
-        parsed_dob = parse_date_of_birth(date_of_birth, today=clinic_today())
+        parsed_dob = parse_date_of_birth(date_of_birth, today=clinic.config.today())
         if parsed_dob.ok and parsed_dob.value:
             draft.values["date_of_birth"] = parsed_dob.value
         else:
@@ -123,7 +130,11 @@ def normalize_registration_fields(
         draft.issues.add("date_of_birth", "I still need the date of birth.")
 
     if insurance_provider is not None:
-        insurance = normalize_insurance(insurance_provider)
+        insurance = normalize_insurance(
+            insurance_provider,
+            accepted_plans=accepted,
+            self_pay_label=clinic.self_pay_label,
+        )
         if insurance.ok and insurance.value:
             draft.values["insurance_provider"] = insurance.value
         else:
@@ -138,11 +149,16 @@ def normalize_registration_fields(
     return draft
 
 
-def _patients_with_phone(session: Session, phone: str) -> list[Patient]:
+def _patients_with_phone(
+    session: Session, clinic: ClinicContext, phone: str
+) -> list[Patient]:
     """Match on the last 10 digits so stored formatting never matters.
 
     ``patients.phone`` is deliberately non-unique (families share numbers), so
-    this returns a list.
+    this returns a list. The clinic predicate is written out rather than left to
+    the session binding: this is the lookup that decides whether a phone number
+    exists *at all*, and a number charted at another practice must read as
+    absent here rather than as a match to refuse to speak about.
     """
     target = phone_digits(phone)
     if not target:
@@ -151,16 +167,18 @@ def _patients_with_phone(session: Session, phone: str) -> list[Patient]:
         func.replace(func.replace(func.replace(Patient.phone, "+", ""), "-", ""), " ", ""), "(", ""
     )
     candidates = session.scalars(
-        select(Patient).where(
-            func.replace(func.replace(digits_only, ")", ""), ".", "").like(f"%{target}")
+        select(Patient)
+        .where(
+            Patient.clinic_id == clinic.clinic_id,
+            func.replace(func.replace(digits_only, ")", ""), ".", "").like(f"%{target}"),
         )
     ).all()
     return [person for person in candidates if phone_digits(person.phone) == target]
 
 
-def find_duplicate_summary(session: Session, phone: str, full_name: str) -> dict:
+def find_duplicate_summary(session: Session, clinic: ClinicContext, phone: str, full_name: str) -> dict:
     """Neutral duplicate information. Counts only -- never record contents."""
-    same_phone = _patients_with_phone(session, phone)
+    same_phone = _patients_with_phone(session, clinic, phone)
     if not same_phone:
         return {"match_count": 0, "same_name": False, "likely_household": False}
 
@@ -180,14 +198,14 @@ def find_duplicate_summary(session: Session, phone: str, full_name: str) -> dict
     }
 
 
-def verify_patient(session: Session, *, phone: str, date_of_birth: str) -> dict:
+def verify_patient(session: Session, clinic: ClinicContext, *, phone: str, date_of_birth: str) -> dict:
     """Match an existing chart by phone + DOB. Both must agree.
 
     Returns a neutral failure on mismatch -- no hint about which part was wrong,
     so this cannot be used to probe for a phone number's existence.
     """
     phone_result = normalize_phone(phone)
-    dob_result = parse_date_of_birth(date_of_birth, today=clinic_today())
+    dob_result = parse_date_of_birth(date_of_birth, today=clinic.config.today())
     if not phone_result.ok or not phone_result.e164:
         return {"verified": False, "reason": "phone_invalid", "message": phone_result.error}
     if not dob_result.ok or dob_result.value is None:
@@ -195,7 +213,7 @@ def verify_patient(session: Session, *, phone: str, date_of_birth: str) -> dict:
 
     matches = [
         person
-        for person in _patients_with_phone(session, phone_result.e164)
+        for person in _patients_with_phone(session, clinic, phone_result.e164)
         if person.date_of_birth == dob_result.value
     ]
 
@@ -239,17 +257,20 @@ def registration_completeness(patient: Patient) -> dict[str, bool]:
     }
 
 
-def patient_profile(patient: Patient) -> dict:
+def patient_profile(clinic: ClinicContext, patient: Patient) -> dict:
     """Detail payload. Callers must have already established verification."""
     completeness = registration_completeness(patient)
+    self_pay = clinic.self_pay_label
     return {
         "patient_id": patient.id,
+        "clinic_id": patient.clinic_id,
+        "slug": clinic.slug,
         "full_name": patient.full_name,
         "first_name": first_name(patient.full_name),
         "phone": patient.phone,
         "date_of_birth": patient.date_of_birth.isoformat(),
-        "insurance_provider": patient.insurance_provider or SELF_PAY_LABEL,
-        "is_self_pay": (patient.insurance_provider or "") == SELF_PAY_LABEL,
+        "insurance_provider": patient.insurance_provider or self_pay,
+        "is_self_pay": (patient.insurance_provider or "") == self_pay,
         "registration_complete": all(completeness.values()),
         "missing_fields": [name for name, ok in completeness.items() if not ok],
     }
@@ -257,15 +278,20 @@ def patient_profile(patient: Patient) -> dict:
 
 def register_patient(
     session: Session,
+    clinic: ClinicContext,
     *,
     full_name: str,
     phone: str,
     date_of_birth: str,
     insurance_provider: str,
-    allow_duplicate_phone: bool = True,
 ) -> dict:
-    """Create a new chart. Assumes fields were already validated/normalized."""
-    duplicates = find_duplicate_summary(session, phone, full_name)
+    """Create a new chart. Assumes fields were already validated/normalized.
+
+    A shared phone is not a refusal: households routinely register several
+    children under one number, so only a same name *and* phone pair is treated
+    as a possible duplicate of the same person.
+    """
+    duplicates = find_duplicate_summary(session, clinic, phone, full_name)
     if duplicates["same_name"]:
         return {
             "created": False,
@@ -277,6 +303,7 @@ def register_patient(
         }
 
     patient = Patient(
+        clinic_id=clinic.clinic_id,
         full_name=full_name,
         phone=phone,
         date_of_birth=date.fromisoformat(date_of_birth)
@@ -288,7 +315,7 @@ def register_patient(
     )
     session.add(patient)
     session.flush()
-    generations.increment_patient_registration(session)
+    generations.increment_patient_registration(session, clinic_id=clinic.clinic_id)
     audit.record(
         session,
         action="patient.registered",
@@ -307,6 +334,7 @@ def register_patient(
 
 def update_patient(
     session: Session,
+    clinic: ClinicContext,
     patient: Patient,
     *,
     full_name: str | None = None,
@@ -319,7 +347,12 @@ def update_patient(
     Each field is validated independently, so a wrong phone does not block a
     corrected spelling of the name.
     """
+    if patient.clinic_id != clinic.clinic_id:
+        # A chart loaded under one tenant and handed to another is a bug, not a
+        # correction: refuse before anything is written.
+        return {"updated": False, "reason": "clinic_mismatch"}
     draft = normalize_registration_fields(
+        clinic,
         full_name=full_name,
         phone=phone,
         date_of_birth=date_of_birth,

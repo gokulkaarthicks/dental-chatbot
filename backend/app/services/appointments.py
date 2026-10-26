@@ -48,7 +48,7 @@ from app.services.proposals import (
     pending_for_conversation,
     supersede_pending,
 )
-from app.timeutil import clinic_now
+from app.tenancy import ClinicContext
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AppointmentView:
     appointment: Appointment
+    # The tenant's wall-clock at the moment the view was built. "Upcoming" is a
+    # claim about *this* clinic's timezone: slot rows are stored as naive local
+    # time, so comparing them against the container clock would call a Pacific
+    # 10:00 visit past while an Eastern practice is still mid-morning.
+    now: datetime
     provider: Provider | None = None
     appointment_type: AppointmentType | None = None
 
@@ -70,7 +75,7 @@ class AppointmentView:
         return (
             self.appointment.status == AppointmentStatus.BOOKED.value
             and self.appointment.rescheduled_to_id is None
-            and self.appointment.starts_at >= clinic_now()
+            and self.appointment.starts_at >= self.now
         )
 
     @property
@@ -106,7 +111,7 @@ class AppointmentView:
         }
 
 
-def _views(session: Session, statement) -> list[AppointmentView]:
+def _views(session: Session, clinic: ClinicContext, statement) -> list[AppointmentView]:
     rows = session.scalars(
         statement.options(
             selectinload(Appointment.provider),
@@ -114,15 +119,21 @@ def _views(session: Session, statement) -> list[AppointmentView]:
             selectinload(Appointment.patient),
         )
     ).all()
+    now = clinic.config.now()
     return [
         AppointmentView(
-            appointment=row, provider=row.provider, appointment_type=row.appointment_type
+            appointment=row,
+            now=now,
+            provider=row.provider,
+            appointment_type=row.appointment_type,
         )
         for row in rows
     ]
 
 
-def list_for_patient(session: Session, patient_id: int) -> list[AppointmentView]:
+def list_for_patient(
+    session: Session, clinic: ClinicContext, patient_id: int
+) -> list[AppointmentView]:
     """Upcoming first (soonest first), then past (most recent first).
 
     A reschedule leaves two rows for one visit: the retired original and its
@@ -131,31 +142,40 @@ def list_for_patient(session: Session, patient_id: int) -> list[AppointmentView]
     """
     statement = (
         select(Appointment)
-        .where(Appointment.patient_id == patient_id)
+        .where(
+            Appointment.patient_id == patient_id,
+            Appointment.clinic_id == clinic.clinic_id,
+        )
         .order_by(Appointment.starts_at)
     )
-    views = _views(session, statement)
+    views = _views(session, clinic, statement)
     upcoming = [view for view in views if view.is_upcoming]
     past = [view for view in views if not view.is_upcoming]
     past.sort(key=lambda view: view.appointment.starts_at, reverse=True)
     return upcoming + past
 
 
-def upcoming_for_patient(session: Session, patient_id: int) -> list[AppointmentView]:
-    return [view for view in list_for_patient(session, patient_id) if view.is_upcoming]
+def upcoming_for_patient(
+    session: Session, clinic: ClinicContext, patient_id: int
+) -> list[AppointmentView]:
+    return [
+        view for view in list_for_patient(session, clinic, patient_id) if view.is_upcoming
+    ]
 
 
-def active_for_patient(session: Session, patient_id: int) -> list[AppointmentView]:
+def active_for_patient(
+    session: Session, clinic: ClinicContext, patient_id: int
+) -> list[AppointmentView]:
     """The patient's live bookings: booked, future, not retired by a reschedule.
 
     One function for "exactly one active appointment remains", shared by the
     listing card and the tools so they cannot disagree.
     """
-    return upcoming_for_patient(session, patient_id)
+    return upcoming_for_patient(session, clinic, patient_id)
 
 
 def owned_appointment(
-    session: Session, patient_id: int, appointment_id: int
+    session: Session, clinic: ClinicContext, patient_id: int, appointment_id: int
 ) -> AppointmentView | None:
     """The appointment only if ``patient_id`` owns it. Otherwise ``None``.
 
@@ -164,10 +184,13 @@ def owned_appointment(
     exist", so appointment ids cannot be probed across patients.
     """
     row = session.get(Appointment, appointment_id)
-    if row is None or row.patient_id != patient_id:
+    if row is None or row.patient_id != patient_id or row.clinic_id != clinic.clinic_id:
         return None
     return AppointmentView(
-        appointment=row, provider=row.provider, appointment_type=row.appointment_type
+        appointment=row,
+        now=clinic.config.now(),
+        provider=row.provider,
+        appointment_type=row.appointment_type,
     )
 
 
@@ -376,6 +399,7 @@ def _movable(view: AppointmentView) -> bool:
 
 def resolve_reschedule_target(
     session: Session,
+    clinic: ClinicContext,
     *,
     patient_id: int,
     appointment_id: int | None = None,
@@ -395,7 +419,7 @@ def resolve_reschedule_target(
     model cannot name an appointment it has not been shown.
     """
     if appointment_id is not None:
-        view = owned_appointment(session, patient_id, appointment_id)
+        view = owned_appointment(session, clinic, patient_id, appointment_id)
         if view is None:
             raise RescheduleTargetError(
                 "unknown_appointment", "I can't find that appointment."
@@ -414,7 +438,7 @@ def resolve_reschedule_target(
             )
         return view
 
-    upcoming = upcoming_for_patient(session, patient_id)
+    upcoming = upcoming_for_patient(session, clinic, patient_id)
     if not upcoming:
         raise RescheduleTargetError(
             "no_active_booking",

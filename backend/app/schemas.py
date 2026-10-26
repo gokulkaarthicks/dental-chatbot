@@ -24,6 +24,10 @@ class HealthResponse(BaseModel):
         default=None,
         description="Clinic-local time with UTC offset, e.g. 2026-10-24T15:04:00-07:00",
     )
+    clinic_slug: str | None = Field(
+        default=None,
+        description="The tenant these numbers describe; None before any clinic row exists.",
+    )
 
 
 class BusinessHours(BaseModel):
@@ -56,7 +60,29 @@ class ClinicInsuranceInfo(BaseModel):
     note: str
 
 
+class ClinicScheduling(BaseModel):
+    """The tenant's booking grid, as configured rather than assumed.
+
+    Exposed because a client that hardcodes 30-minute slots or Monday-Saturday
+    hours renders tenant B's 20-minute Tuesday-Saturday grid wrongly. This is the
+    contract that lets the frontend stop embedding clinic policy.
+    """
+
+    timezone: str
+    slot_minutes: int
+    open_time: str
+    close_time: str
+    open_weekdays: list[int]
+    open_day_labels: list[str]
+    closed_day_labels: list[str]
+    booking_days_phrase: str
+    utc_offset: str = ""
+    time_windows: dict[str, list[int]] = Field(default_factory=dict)
+
+
 class ClinicResponse(BaseModel):
+    slug: str = ""
+    clinic_id: int = 0
     name: str
     legal_note: str
     address: ClinicAddress
@@ -72,6 +98,19 @@ class ClinicResponse(BaseModel):
     policies: list[ClinicPolicyItem] = Field(default_factory=list)
     insurance: ClinicInsuranceInfo | None = None
     self_pay_label: str = "Self-pay"
+    scheduling: ClinicScheduling | None = None
+
+
+class ClinicSummary(BaseModel):
+    """One entry in the public clinic directory."""
+
+    slug: str
+    clinic_id: int
+    name: str
+    city: str
+    state: str
+    timezone: str
+    is_default: bool = False
 
 
 class DemoCounts(BaseModel):

@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from app.timeutil import is_open_weekday
+from app.timeutil import SchedulingConfig
 
 WEEKDAY_NAMES: tuple[str, ...] = (
     "monday",
@@ -223,8 +223,14 @@ def _only_future(days: list[date], today: date) -> PhraseResult:
     )
 
 
-def resolve_phrase(phrase: str, today: date) -> PhraseResult:
-    """Resolve one phrase: explicit dates first, then relative wording."""
+def resolve_phrase(phrase: str, today: date, config: SchedulingConfig) -> PhraseResult:
+    """Resolve one phrase: explicit dates first, then relative wording.
+
+    ``config`` is required because "weekday" and "next week" are filtered against
+    the days *this* clinic books on. Tenant A books Monday-Saturday, so "weekdays"
+    includes Monday; tenant B opens Tuesday, and reading its own phrase through
+    tenant A's calendar would offer a Monday that its grid has no slots for.
+    """
     text = re.sub(r"\s+", " ", (phrase or "").strip().lower()).replace(",", " ")
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
@@ -249,7 +255,7 @@ def resolve_phrase(phrase: str, today: date) -> PhraseResult:
         text,
     )
     if weekday_match:
-        return _resolve_weekday(weekday_match.group(1), weekday_match.group(2), today)
+        return _resolve_weekday(weekday_match.group(1), weekday_match.group(2), today, config)
 
     if text in {"today", "tonight"}:
         return PhraseResult(days=[today])
@@ -272,7 +278,7 @@ def resolve_phrase(phrase: str, today: date) -> PhraseResult:
         return _only_future([saturday], today)
 
     if re.fullmatch(r"weekdays?|during the week|any weekday", text):
-        upcoming = [day for day in _span(today, 7) if is_open_weekday(day)]
+        upcoming = [day for day in _span(today, 7) if config.is_open_weekday(day)]
         return PhraseResult(days=upcoming)
 
     # --- weeks --------------------------------------------------------------
@@ -282,19 +288,25 @@ def resolve_phrase(phrase: str, today: date) -> PhraseResult:
         start = sunday + timedelta(days=1)
         if text.startswith("later"):
             start += timedelta(days=3)  # Thursday onward
-            return PhraseResult(days=[day for day in _span(start, 4) if is_open_weekday(day)])
-        return PhraseResult(days=[day for day in _span(start, 7) if is_open_weekday(day)])
+            return PhraseResult(days=[day for day in _span(start, 4) if config.is_open_weekday(day)])
+        return PhraseResult(days=[day for day in _span(start, 7) if config.is_open_weekday(day)])
 
     if re.fullmatch(r"(?:the\s+)?rest of (?:the|this) week|this week", text):
         _, sunday = _week_bounds(today)
-        return PhraseResult(days=[day for day in _span(today, (sunday - today).days + 1) if is_open_weekday(day)])
+        return PhraseResult(
+            days=[
+                day
+                for day in _span(today, (sunday - today).days + 1)
+                if config.is_open_weekday(day)
+            ]
+        )
 
     # --- months -------------------------------------------------------------
     month_match = re.fullmatch(
         r"(early|beginning of|late|end of|mid|middle of)?\s*(next|this|coming)?\s*month", text
     )
     if month_match:
-        return _resolve_month(month_match.group(1) or "", month_match.group(2) or "", today)
+        return _resolve_month(month_match.group(1) or "", month_match.group(2) or "", today, config)
 
     # --- offsets ------------------------------------------------------------
     offset = re.fullmatch(r"in\s+(\d{1,3})\s+(day|days|week|weeks)", text)
@@ -309,7 +321,9 @@ def resolve_phrase(phrase: str, today: date) -> PhraseResult:
     return PhraseResult(unreadable=True, warnings=[f"I couldn't read '{phrase}' as a date."])
 
 
-def _resolve_weekday(qualifier: str | None, word: str, today: date) -> PhraseResult:
+def _resolve_weekday(
+    qualifier: str | None, word: str, today: date, config: SchedulingConfig
+) -> PhraseResult:
     index = weekday_index(word)
     if index is None:
         return PhraseResult(unreadable=True)
@@ -364,7 +378,9 @@ def _resolve_weekday(qualifier: str | None, word: str, today: date) -> PhraseRes
     return PhraseResult(days=[this_day + timedelta(days=7)])
 
 
-def _resolve_month(qualifier: str, which: str, today: date) -> PhraseResult:
+def _resolve_month(
+    qualifier: str, which: str, today: date, config: SchedulingConfig
+) -> PhraseResult:
     if which == "this":
         year, month = today.year, today.month
     else:
@@ -388,7 +404,7 @@ def _resolve_month(qualifier: str, which: str, today: date) -> PhraseResult:
     else:
         window = _span(first, (last - first).days + 1)
 
-    open_days = [day for day in window if day >= today and is_open_weekday(day)]
+    open_days = [day for day in window if day >= today and config.is_open_weekday(day)]
     result = PhraseResult(days=open_days)
     if not open_days:
         result.past = True

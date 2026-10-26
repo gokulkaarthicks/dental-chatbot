@@ -17,7 +17,7 @@ source_files:
 
 ## Approach
 
-The monorepo manages dependencies for two independent subprojects — a Python FastAPI backend under `backend/` and a React/Vite frontend under `frontend/` — using the language-native package managers. There is no top-level dependency manifest; each subproject pins its own third-party packages.
+The monorepo manages dependencies for two independent subprojects -- a Python FastAPI backend under `backend/` and a React/Vite frontend under `frontend/` -- using the language-native package managers. There is no top-level dependency manifest; each subproject pins its own third-party packages.
 
 ### Backend (Python)
 
@@ -28,7 +28,7 @@ The monorepo manages dependencies for two independent subprojects — a Python F
   - `pydantic==2.10.4`
   - `httpx==0.34.0` (used to call DeepSeek over an OpenAI-compatible HTTP API, per the inline comment)
 - **No lockfile** (`requirements.txt` is the single source of truth); there is no `requirements-dev.txt`, `Pipfile`, or `poetry.lock`.
-- **Tooling config** lives in `backend/pyproject.toml`, which only configures Ruff linting and pytest options — it does not declare project dependencies.
+- **Tooling config** lives in `backend/pyproject.toml`, which only configures Ruff linting and pytest options -- it does not declare project dependencies.
 - **Container build** (`backend/Dockerfile`) copies `requirements.txt` first and runs `pip install --no-cache-dir -r requirements.txt` before copying application code, so dependency layers are cached across builds.
 - **Host toolchain**: The Makefile's `lint` target runs `ruff check . --fix && ruff check .` from the `backend/` directory, and `test` runs `pytest -q`. Quality gates on the host require `ruff` and `pytest` installed locally (documented at the bottom of `Makefile`).
 
@@ -42,7 +42,7 @@ The monorepo manages dependencies for two independent subprojects — a Python F
 
 ### Containerization & Isolation
 
-- `docker-compose.yml` defines two services (`backend`, `frontend`) that build from their respective `Dockerfile`s. The compose file explicitly states: "The only host-side configuration is the `.env` file" — dependencies are resolved inside containers, not on the host.
+- `docker-compose.yml` defines two services (`backend`, `frontend`) that build from their respective `Dockerfile`s. The compose file explicitly states: "The only host-side configuration is the `.env` file" -- dependencies are resolved inside containers, not on the host.
 - The backend container uses `python:3.12-slim` and sets `PIP_NO_CACHE_DIR=1` and `PIP_DISABLE_PIP_VERSION_CHECK=1`.
 - The frontend multi-stage Dockerfile installs Node/npm via `apt-get` in the build stage and serves built artifacts from `nginx:1.27-alpine` at runtime.
 
@@ -52,4 +52,4 @@ The monorepo manages dependencies for two independent subprojects — a Python F
 - No vendoring strategy (no `vendor/` directory, no Poetry/PDM lockfiles, no private PyPI registry configured).
 - No private registries or authentication tokens are present in the repository; all packages come from public PyPI and the npm registry.
 - Dependency updates are expected to be manual edits to `requirements.txt` / `package.json` followed by committing the regenerated `package-lock.json`.
-- The Makefile centralizes developer entry points (`make up`, `make dev`, `make lint`, `make test`) but does not orchestrate dependency installation itself — it assumes the Docker images handle `pip install` / `npm install`.
+- The Makefile centralizes developer entry points (`make up`, `make dev`, `make lint`, `make test`) but does not orchestrate dependency installation itself -- it assumes the Docker images handle `pip install` / `npm install`.

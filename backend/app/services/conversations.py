@@ -43,6 +43,7 @@ def create_conversation(
 ) -> Conversation:
     now = utcnow()
     conversation = Conversation(
+        clinic_id=patient_session.clinic_id,
         public_id=new_public_id(),
         patient_session_id=patient_session.id,
         status=ConversationStatus.ACTIVE.value,
@@ -77,24 +78,6 @@ def get_by_public_id(session: Session, public_id: str) -> Conversation | None:
     expose this through a route that takes a conversation id from a client.
     """
     return session.scalar(select(Conversation).where(Conversation.public_id == public_id))
-
-
-def newest_for_patient(
-    session: Session, *, patient_id: int, generation: str
-) -> Conversation | None:
-    rows = session.scalars(
-        select(Conversation)
-        .where(
-            Conversation.patient_id == patient_id,
-            Conversation.reset_generation == generation,
-        )
-        .order_by(
-            func.coalesce(Conversation.last_message_at, Conversation.started_at).desc(),
-            Conversation.id.desc(),
-        )
-        .limit(1)
-    ).all()
-    return rows[0] if rows else None
 
 
 def resume_for_session(
@@ -155,9 +138,14 @@ def list_for_session(
     return list(session.scalars(statement).all())
 
 
-def _next_sequence(session: Session, conversation_id: int) -> int:
+def _next_sequence(session: Session, conversation: Conversation) -> int:
+    # A projection, so the session's tenant criterion is not appended here; the
+    # denormalised ``clinic_id`` on ``messages`` is what keeps the max local.
     current = session.scalar(
-        select(func.max(Message.sequence)).where(Message.conversation_id == conversation_id)
+        select(func.max(Message.sequence)).where(
+            Message.conversation_id == conversation.id,
+            Message.clinic_id == conversation.clinic_id,
+        )
     )
     return int(current or 0) + 1
 
@@ -166,10 +154,11 @@ def append_patient_message(session: Session, conversation: Conversation, text: s
     now = utcnow()
     prior = count_patient_messages(session, conversation)
     message = Message(
+        clinic_id=conversation.clinic_id,
         conversation_id=conversation.id,
         role="patient",
         content=text.strip(),
-        sequence=_next_sequence(session, conversation.id),
+        sequence=_next_sequence(session, conversation),
         created_at=now,
         finished_at=now,
     )
@@ -188,7 +177,11 @@ def count_patient_messages(session: Session, conversation: Conversation) -> int:
         session.scalar(
             select(func.count())
             .select_from(Message)
-            .where(Message.conversation_id == conversation.id, Message.role == "patient")
+            .where(
+                Message.conversation_id == conversation.id,
+                Message.clinic_id == conversation.clinic_id,
+                Message.role == "patient",
+            )
         )
         or 0
     )
@@ -225,10 +218,11 @@ def append_assistant_message(
 ) -> Message:
     now = utcnow()
     message = Message(
+        clinic_id=conversation.clinic_id,
         conversation_id=conversation.id,
         role="assistant",
         content=content,
-        sequence=_next_sequence(session, conversation.id),
+        sequence=_next_sequence(session, conversation),
         created_at=now,
         tool_calls=tool_calls or None,
         finished_at=now if not tool_calls else None,
@@ -249,10 +243,11 @@ def append_tool_message(
     payload: dict[str, Any],
 ) -> Message:
     message = Message(
+        clinic_id=conversation.clinic_id,
         conversation_id=conversation.id,
         role="tool",
         content=json.dumps(payload, default=str),
-        sequence=_next_sequence(session, conversation.id),
+        sequence=_next_sequence(session, conversation),
         created_at=utcnow(),
         tool_call_id=tool_call_id,
         tool_name=tool_name,
@@ -266,7 +261,10 @@ def history(session: Session, conversation: Conversation) -> list[Message]:
     return list(
         session.scalars(
             select(Message)
-            .where(Message.conversation_id == conversation.id)
+            .where(
+                Message.conversation_id == conversation.id,
+                Message.clinic_id == conversation.clinic_id,
+            )
             .order_by(Message.sequence)
         ).all()
     )
@@ -276,59 +274,14 @@ def last_message_id(session: Session, conversation: Conversation) -> int:
     """Id of the newest stored message, i.e. the floor for the current turn."""
     return int(
         session.scalar(
-            select(func.max(Message.id)).where(Message.conversation_id == conversation.id)
+            select(func.max(Message.id))
+            .where(
+                Message.conversation_id == conversation.id,
+                Message.clinic_id == conversation.clinic_id,
+            )
         )
         or 0
     )
-
-
-def to_provider_messages(messages: list[Message]) -> list[dict[str, Any]]:
-    """Convert stored rows into the provider's message format.
-
-    - ``system`` and ``staff`` rows are skipped: our system prompt is rebuilt per
-      turn so it always carries current session state.
-    - ``tool`` rows are attached to the assistant turn that requested them.
-    - Orphaned tool rows (assistant turn missing) are dropped; sending them would
-      be rejected by the provider.
-    """
-    pending: dict[str, list[Message]] = {}
-    for message in messages:
-        if message.role == "tool" and message.tool_call_id:
-            pending.setdefault(message.tool_call_id, []).append(message)
-
-    output: list[dict[str, Any]] = []
-    for message in messages:
-        if message.role == "patient":
-            output.append({"role": "user", "content": message.content})
-        elif message.role == "assistant":
-            entry: dict[str, Any] = {"role": "assistant", "content": message.content or ""}
-            calls = message.tool_calls or []
-            if calls:
-                entry["tool_calls"] = calls
-                output.append(entry)
-                for call in calls:
-                    call_id = call.get("id")
-                    followers = pending.pop(call_id, []) if call_id else []
-                    if followers:
-                        output.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "content": followers[0].content,
-                            }
-                        )
-                    else:
-                        output.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "content": json.dumps({"ok": False, "error": "missing_result"}),
-                            }
-                        )
-                continue
-            output.append(entry)
-        # tool/system/staff rows are handled above or intentionally omitted
-    return output
 
 
 def public_message(message: Message) -> dict[str, Any]:

@@ -1,1 +1,0 @@
-FastAPI routers exposing patient chat, staff dashboard, scheduling cards, clinic info, and health endpoints backed by SQLAlchemy sessions and domain services.

@@ -1,3 +1,12 @@
+/**
+ * `/overview`: the Phase 1 operations screen, kept working alongside the chat.
+ *
+ * An inspector, not a workflow: health, the clinic profile, and the demo
+ * fixture counts, each fetched independently so one failing panel does not
+ * blank the page. Reserved for diagnosing the demo -- the containerised
+ * equivalent is `/api/demo/status`.
+ */
+
 import { api, type ClinicResponse, type DemoStatusResponse, type HealthResponse } from "../api/client";
 import { AppShell } from "../components/AppShell";
 import { Card } from "../components/Card";

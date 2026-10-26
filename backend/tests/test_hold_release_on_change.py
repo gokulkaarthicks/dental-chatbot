@@ -150,6 +150,7 @@ def test_changing_a_booking_releases_its_hold_in_the_same_turn(db, world_session
 
     answer = scheduling.find_availability(
         session,
+        requester.clinic,
         patient=requester.patient,
         appointment_type_code="cleaning",
         requester=requester,
@@ -174,6 +175,7 @@ def test_releasing_does_not_touch_a_booking_that_was_confirmed(db, world_session
 
     scheduling.find_availability(
         session,
+        requester.clinic,
         patient=requester.patient,
         appointment_type_code="cleaning",
         requester=requester,

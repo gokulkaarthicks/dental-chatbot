@@ -17,11 +17,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from app.clinic import CLINIC
-from app.timeutil import OPEN_TIME, SLOT_LENGTH, clinic_today
+from app.timeutil import SchedulingConfig
 
 FIXTURE_SET = "clinic-demo"
 FIXTURE_VERSION = 1
+
+# The opening line stored in the demo transcripts. Kept as a template rather than
+# an f-string because the clinic name is a *tenant* fact: substituting one
+# practice's name into another's history is exactly the leak the tenancy work is
+# meant to make impossible. ``app.seed_tenants`` fills it in per clinic.
+GREETING_TEMPLATE = "Thanks for calling {clinic_name}. How can I help?"
 
 
 @dataclass(frozen=True)
@@ -121,13 +126,28 @@ class ConversationFixture:
 
 
 @dataclass(frozen=True)
+class ProposalItemFixture:
+    """One line of a proposal, naming the rows it points at.
+
+    A dataclass rather than a tuple because the seed namespaces fixture keys per
+    tenant: the keys have to be addressable fields so the prefixing table can
+    rewrite them along with every other reference.
+    """
+
+    patient_key: str
+    provider_key: str
+    type_code: str
+    day_offset: int
+    slot_index: int
+
+
+@dataclass(frozen=True)
 class ProposalFixture:
     key: str
     conversation_key: str
     status: str
     summary: str
-    # (patient_key, provider_key, type_code, day_offset, slot_index)
-    items: tuple[tuple[str, str, str, int, int], ...]
+    items: tuple[ProposalItemFixture, ...]
 
 
 PROVIDERS: tuple[ProviderFixture, ...] = (
@@ -444,7 +464,7 @@ CONVERSATIONS: tuple[ConversationFixture, ...] = (
         status="active",
         day_offset=-1,
         messages=(
-            ("assistant", f"Thanks for calling {CLINIC.name}. How can I help?", 0),
+            ("assistant", GREETING_TEMPLATE, 0),
             ("patient", "Hi, I'd like to book cleanings for the whole family.", 1),
             ("assistant", "Happy to help. Which names should I include?", 2),
         ),
@@ -456,7 +476,7 @@ CONVERSATIONS: tuple[ConversationFixture, ...] = (
         status="closed",
         day_offset=-9,
         messages=(
-            ("assistant", f"Thanks for calling {CLINIC.name}. How can I help?", 0),
+            ("assistant", GREETING_TEMPLATE, 0),
             ("patient", "I have a bad toothache on the bottom right.", 1),
             ("assistant", "Let's get you seen today. I have an opening at 3:00 PM.", 2),
         ),
@@ -470,29 +490,43 @@ PROPOSALS: tuple[ProposalFixture, ...] = (
         status="pending",
         summary="Back-to-back Saturday cleanings for Marcus, Priya, and Ellie.",
         items=(
-            ("marcus-whitfield", "dr-bell", "cleaning", 5, 2),
-            ("priya-whitfield", "dr-bell", "cleaning", 5, 4),
-            ("ellie-whitfield", "dr-varga", "cleaning", 5, 6),
+            ProposalItemFixture("marcus-whitfield", "dr-bell", "cleaning", 5, 2),
+            ProposalItemFixture("priya-whitfield", "dr-bell", "cleaning", 5, 4),
+            ProposalItemFixture("ellie-whitfield", "dr-varga", "cleaning", 5, 6),
         ),
     ),
 )
 
 
-def anchor_date(today: date | None = None) -> date:
-    """Start of the next Monday at or after today.
+def anchor_date(config: SchedulingConfig, today: date | None = None) -> date:
+    """Start of the next Monday at or after the clinic's own today.
 
     Anchoring the horizon on a Monday guarantees every ``day_offset`` used by
     the fixtures falls on the same weekday regardless of when the demo is seeded.
+    ``config`` is required because "today" is a claim about a timezone: seeding
+    tenant B on a server set to Pacific would otherwise anchor a day early.
     """
-    current = today or clinic_today()
+    current = today or config.today()
     return current + timedelta(days=(7 - current.weekday()) % 7)
 
 
-def appointment_bounds(fixture: AppointmentFixture, anchor: date) -> tuple[datetime, datetime]:
-    """Absolute start/end for a fixture appointment given a seed anchor date."""
-    durations = {item.code: item.duration_minutes for item in APPOINTMENT_TYPES}
+def appointment_bounds(
+    fixture: AppointmentFixture,
+    anchor: date,
+    config: SchedulingConfig,
+    types: tuple[AppointmentTypeFixture, ...] | None = None,
+) -> tuple[datetime, datetime]:
+    """Absolute start/end for a fixture appointment given a seed anchor date.
+
+    The ``slot_index`` is counted on *this* clinic's grid, so the same fixture
+    index means 09:00 + 20 minutes at a 20-minute practice and 08:00 + 30 minutes
+    at a 30-minute one.
+    """
+    durations = {
+        item.code: item.duration_minutes for item in (types or APPOINTMENT_TYPES)
+    }
     day = anchor + timedelta(days=fixture.day_offset)
-    starts_at = datetime.combine(day, OPEN_TIME) + SLOT_LENGTH * fixture.slot_index
+    starts_at = datetime.combine(day, config.open_time) + config.slot_length * fixture.slot_index
     return starts_at, starts_at + timedelta(minutes=durations[fixture.type_code])
 
 
@@ -538,19 +572,25 @@ class SeedSummary:
         }
 
 
-def fixture_counts() -> dict[str, int]:
-    """Static counts of the fixture definitions, safe to expose publicly."""
+def fixture_counts(plan: SeedPlan | None = None) -> dict[str, int]:
+    """Static counts of a tenant's fixture definitions, safe to expose publicly.
+
+    With no plan, tenant 1's tables are counted -- which is what the single-clinic
+    build meant. A second clinic has its own roster, so ``/api/demo/status`` passes
+    the resolved tenant's plan instead.
+    """
+    table = plan if plan is not None else SEED_PLAN
     return {
-        "providers": len(PROVIDERS),
-        "patients": len(PATIENTS),
-        "family_groups": len(FAMILIES),
-        "appointment_types": len(APPOINTMENT_TYPES),
-        "seeded_appointments": len(UPCOMING_APPOINTMENTS) + len(PAST_APPOINTMENTS),
-        "staff_users": len(STAFF),
-        "alerts": len(ALERTS),
-        "pending_requests": len(PENDING_REQUESTS),
-        "conversations": len(CONVERSATIONS),
-        "proposals": len(PROPOSALS),
+        "providers": len(table.providers),
+        "patients": len(table.patients),
+        "family_groups": len(table.families),
+        "appointment_types": len(table.appointment_types),
+        "seeded_appointments": len(table.upcoming) + len(table.past),
+        "staff_users": len(table.staff),
+        "alerts": len(table.alerts),
+        "pending_requests": len(table.pending_requests),
+        "conversations": len(table.conversations),
+        "proposals": len(table.proposals),
     }
 
 

@@ -11,7 +11,8 @@ import { ChevronRight, Search } from "lucide-react";
 
 import { staffApi, type PatientDetailResponse, type StaffPatientRef } from "../../../api/staff";
 import { Button } from "../../../components/Button";
-import { appointmentBadge, fullTimestamp, EmptyState, ErrorState, SkeletonRows } from "../StaffUi";
+import { fullTimestamp } from "../../../lib/staffFormat";
+import { appointmentBadge, EmptyState, ErrorState, SkeletonRows } from "../StaffUi";
 import { useStaffQuery } from "../useStaffData";
 
 export function PatientsSection() {

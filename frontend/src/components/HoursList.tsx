@@ -1,3 +1,11 @@
+/**
+ * The week's business hours, with today's row marked.
+ *
+ * Days the clinic is closed are still listed rather than dropped: a patient
+ * scanning the sidebar should see the shape of the week, and a missing day
+ * reads as a bug. Order is fixed Mon-Sun, not object key order.
+ */
+
 import type { BusinessHours } from "../api/client";
 
 const DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

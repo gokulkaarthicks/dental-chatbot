@@ -1,27 +1,24 @@
 """System prompt construction.
 
 The prompt carries: persona, hard rules (privacy, no fabrication), the current
-session state, and the clinic facts the model is allowed to state. Policy text
-is injected from ``app.clinic`` so the prompt and ``/api/clinic`` cannot drift.
+session state, and the clinic facts the model is allowed to state. Those facts
+are read from the resolved tenant's ``ClinicContext`` (backed by the database),
+never from module constants, so the prompt and ``/api/clinic`` cannot drift apart
+and a second practice gets its own persona rather than borrowing the first one's
+address and hours.
 """
 
 from __future__ import annotations
 
 from datetime import date, timedelta
 
-from app.clinic import (
-    ACCEPTED_INSURANCE_PLANS,
-    CLINIC,
-    PRACTICE_POLICIES,
-    SELF_PAY_LABEL,
-    InsurancePlan,
-)
+from app.clinic import InsurancePlan
 from app.models import Patient
 from app.services import patients
-from app.timeutil import SLOT_MINUTES
+from app.tenancy import ClinicContext
 
-PERSONA = f"""You are the virtual front-desk receptionist for {CLINIC.name}, a dental practice in \
-{CLINIC.city}, {CLINIC.state}. You are speaking with a patient in a web chat, in the style of a \
+PERSONA_TEMPLATE = """You are the virtual front-desk receptionist for {clinic_name}, a dental practice in \
+{city}, {state}. You are speaking with a patient in a web chat, in the style of a \
 warm, efficient American dental receptionist.
 
 Voice
@@ -30,6 +27,12 @@ Voice
 - Do not use markdown, bullet lists, numbered lists, emoji, or headers. Plain sentences only.
 - Ask for at most two missing details per message.
 - Mirror the caller's urgency: if they are in pain, acknowledge it first, then help."""
+
+GREETING_TEMPLATE = (
+    "Thanks for reaching {clinic_name}! I'm the virtual front desk. "
+    "I can help with appointments, hours, insurance, or getting you registered. "
+    "What brings you in?"
+)
 
 HARD_RULES = """Non-negotiable rules
 1. Never reveal anything about an existing patient's chart until that patient is verified in
@@ -87,6 +90,11 @@ HARD_RULES = """Non-negotiable rules
     time as if it were the first."""
 
 TOOL_GUIDANCE = """Using your tools
+- You are offered only the tools this conversation is allowed to use right now. When a tool is
+  missing from your list, that step is not available yet: never say it happened or promise it,
+  and instead collect what it needs or carry the request on with a tool you do have.
+- One step runs at most four tool calls. Ask for what you need now; anything past that is refused
+  and does nothing, so put the rest in your next step rather than repeating the same call.
 - New conversation or unclear state: call get_session_context first.
 - Returning patient: ask for phone and date of birth, then verify_existing_patient.
 - New patient: collect full name, phone, date of birth, and insurance (or self-pay). You can
@@ -128,6 +136,11 @@ TOOL_GUIDANCE = """Using your tools
   say it's booked.
 - When they confirm a NEW booking (in words or via the button), call confirm_booking_proposal.
   If it reports slot_taken, apologize briefly, say nothing was booked, and search again.
+- A confirmation spends the patient's own yes, never yours. Call confirm_booking_proposal or
+  confirm_appointment_change only after their message agrees to the card that is waiting (yes,
+  that works, book it, go ahead) or they pressed its button. Do not call one because a time looks
+  right to you, because they asked a question about it, or because they hedged: describe the card
+  once, ask, and wait.
 - Before any change to an existing visit, call get_patient_appointments. If there are several,
   ask which one instead of guessing.
 - Changing a time is a RESCHEDULE, never a new booking. Words like move, reschedule, change,
@@ -201,32 +214,56 @@ TOOL_GUIDANCE = """Using your tools
   receptionist would, keeping the same meaning."""
 
 
-def _insurance_block() -> str:
-    def line(plan: InsurancePlan) -> str:
-        return f"  - {plan.name}: accepted. {plan.note}"
+def _persona(clinic: ClinicContext) -> str:
+    return PERSONA_TEMPLATE.format(clinic_name=clinic.name, city=clinic.city, state=clinic.state)
 
-    accepted = "\n".join(line(plan) for plan in ACCEPTED_INSURANCE_PLANS)
+
+def _insurance_block(clinic: ClinicContext) -> str:
+    """The tenant's carriers only.
+
+    A model told about tenant A's plans will happily reassure a caller that
+    tenant B accepts them, which is a coverage promise the practice never made.
+    """
+
+    def line(plan: InsurancePlan) -> str:
+        accepted = "accepted" if plan.accepted else "not accepted"
+        suffix = f" {plan.note}" if plan.note else ""
+        return f"  - {plan.name}: {accepted}.{suffix}"
+
+    plans = "\n".join(line(plan) for plan in clinic.insurance_plans) or "  - none listed"
+    note = clinic.insurance_note or (
+        "  Any other plan: we can see the patient and submit a claim, but never promise coverage."
+    )
     return (
         "Insurance\n"
-        f"Accepted plans:\n{accepted}\n"
-        f"  - {SELF_PAY_LABEL}: yes, patients without insurance pay the quoted fees.\n"
-        "  Any other plan: we can see the patient and submit a claim, but never promise coverage."
+        f"Plans on file for this clinic:\n{plans}\n"
+        f"  - {clinic.self_pay_label}: yes, patients without insurance pay the quoted fees.\n"
+        f"{note}"
     )
 
 
-def _policy_block() -> str:
-    rows = "\n".join(f"  - {policy.topic}: {policy.answer}" for policy in PRACTICE_POLICIES)
+def _policy_block(clinic: ClinicContext) -> str:
+    if not clinic.policies:
+        return (
+            "Clinic facts (authoritative): none are on file for this practice. "
+            "Use create_staff_request instead of guessing."
+        )
+    rows = "\n".join(f"  - {policy.topic}: {policy.answer}" for policy in clinic.policies)
     return f"Clinic facts (authoritative; use get_practice_info to retrieve any of these)\n{rows}"
 
 
-def _hours_block() -> str:
-    parts: list[str] = []
-    for day, hours in CLINIC.business_hours.items():
-        if hours["open"] and hours["close"]:
-            parts.append(f"{day} {hours['open']}-{hours['close']}")
-        else:
-            parts.append(f"{day} closed")
-    return "Hours (" + CLINIC.timezone + "): " + ", ".join(parts) + "."
+def _hours_block(clinic: ClinicContext) -> str:
+    """Rendered from the tenant's own grid, so closed days and offsets are theirs."""
+    return clinic.hours_block()
+
+
+def _facts_line(clinic: ClinicContext) -> str:
+    config = clinic.config
+    return (
+        f"Address: {clinic.full_address}. Phone: {clinic.phone}. "
+        f"Slots are {config.slot_minutes} minutes; booking is {config.booking_days_phrase}, "
+        f"{config.hours_phrase(clinic.timezone_note or config.timezone_name)}."
+    )
 
 
 def _upcoming_days(today: str, count: int = 10) -> str:
@@ -246,7 +283,9 @@ def _upcoming_days(today: str, count: int = 10) -> str:
     )
 
 
-def _session_state(patient: Patient | None, *, next_open_slot: str | None, today: str) -> str:
+def _session_state(
+    clinic: ClinicContext, patient: Patient | None, *, next_open_slot: str | None, today: str
+) -> str:
     if patient is None:
         return (
             "SESSION STATE\n"
@@ -279,7 +318,7 @@ def _session_state(patient: Patient | None, *, next_open_slot: str | None, today
         lines.append(
             "  Next step: help with their request; search_availability may be used for times."
         )
-    lines.append(f"  Clinic today: {today} ({CLINIC.timezone})")
+    lines.append(f"  Clinic today: {today} ({clinic.timezone_name})")
     lines.append(
         "  Calendar for resolving relative days (the tool does the conversion; do not "
         "compute dates yourself): " + _upcoming_days(today)
@@ -291,30 +330,24 @@ def _session_state(patient: Patient | None, *, next_open_slot: str | None, today
 
 def build_system_prompt(
     *,
+    clinic: ClinicContext,
     patient: Patient | None,
     clinic_today: str,
     next_open_slot: str | None = None,
 ) -> str:
     return "\n\n".join(
         [
-            PERSONA,
+            _persona(clinic),
             HARD_RULES,
             TOOL_GUIDANCE,
-            f"{_hours_block()}"
-            f"\nAddress: {CLINIC.address_line1}, {CLINIC.address_line2}, "
-            f"{CLINIC.city}, {CLINIC.state} {CLINIC.postal_code}. "
-            f"Phone: {CLINIC.phone}. Slots are {SLOT_MINUTES} minutes; booking is Mon-Sat.",
-            _insurance_block(),
-            _policy_block(),
-            _session_state(patient, next_open_slot=next_open_slot, today=clinic_today),
+            f"{_hours_block(clinic)}\n{_facts_line(clinic)}",
+            _insurance_block(clinic),
+            _policy_block(clinic),
+            _session_state(clinic, patient, next_open_slot=next_open_slot, today=clinic_today),
         ]
     )
 
 
-def build_greeting() -> str:
+def build_greeting(clinic: ClinicContext) -> str:
     """Deterministic opening line. No model call, so the first paint is instant."""
-    return (
-        f"Thanks for reaching {CLINIC.name}! I'm the virtual front desk. "
-        "I can help with appointments, hours, insurance, or getting you registered. "
-        "What brings you in?"
-    )
+    return GREETING_TEMPLATE.format(clinic_name=clinic.name)

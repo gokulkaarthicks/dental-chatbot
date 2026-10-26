@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent import reply_format, runner
+from app.agent import reply_format
+from app.agent.tools import is_time_reask
 from app.services import patients
 
 SLOT = {
@@ -59,7 +60,7 @@ SLOT = {
 def test_a_request_for_times_is_recognised(text: str) -> None:
     # "morning" is a preference on the day already being discussed: it must not
     # be mistaken for a re-ask here, the model owns that one.
-    assert runner.is_time_reask(text) is (text != "morning")
+    assert is_time_reask(text) is (text != "morning")
 
 
 @pytest.mark.parametrize(
@@ -73,7 +74,7 @@ def test_a_request_for_times_is_recognised(text: str) -> None:
     ],
 )
 def test_ordinary_messages_are_not_re_asks(text: str) -> None:
-    assert runner.is_time_reask(text) is False
+    assert is_time_reask(text) is False
 
 
 def test_a_re_ask_says_it_refreshed_instead_of_reintroducing_the_day() -> None:

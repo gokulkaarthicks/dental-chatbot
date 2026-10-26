@@ -26,7 +26,6 @@ Everything is configured by fixtures, so no environment variable is needed.
 
 from __future__ import annotations
 
-import json
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -37,8 +36,9 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.agent.scheduling_tools import SCHEDULING_TOOL_NAMES
-from app.agent.tools import ToolContext, execute_tool
+from app import tenancy
+from app.agent.context import TurnDeps
+from app.agent.tools import ALL_TOOLS
 from app.db import create_db_engine
 from app.models import (
     Appointment,
@@ -66,7 +66,15 @@ from app.services.proposals import (
     pending_for_conversation,
 )
 from app.services.scheduling import Requester
-from app.timeutil import CLOSE_TIME, OPEN_TIME, SLOT_MINUTES
+from tests.support import (
+    CLOSE_TIME,
+    OPEN_TIME,
+    SLOT_MINUTES,
+    clinic_of,
+    deps_for,
+    invoke_tool,
+    seed_clinic,
+)
 
 # 2030-05-01 is a Wednesday and 2030-05-03 a Friday. Both are open weekdays, so
 # the scenario does not depend on the day the suite runs.
@@ -110,21 +118,32 @@ def db(tmp_path: Path) -> Iterator[SessionFactory]:
     ``create_db_engine`` still applies WAL, foreign keys and the busy timeout, so
     the concurrency test exercises real locking. ``create_schema``/seed are
     deliberately *not* used: they write to the project's real database path.
+
+    The factory comes back already bound to one clinic through ``info``, which is
+    what ``app.db.bind_tenant`` would set afterwards. Doing it at construction is
+    what makes the concurrency test honest: the second thread's session is
+    scoped without the test having to remember to scope it.
     """
     from app import db as db_module
 
     engine = create_db_engine(f"sqlite+pysqlite:///{tmp_path / 'reschedule-test.db'}")
-    factory: SessionFactory = sessionmaker(bind=engine, expire_on_commit=False)
     previous_engine = db_module._engine
     previous_factory = db_module._session_factory
     db_module._engine = engine
-    db_module._session_factory = factory
     Base.metadata.create_all(bind=engine)
+    seeding = sessionmaker(bind=engine, expire_on_commit=False)()
+    clinic = seed_clinic(seeding)
+    seeding.close()
+    factory: SessionFactory = sessionmaker(
+        bind=engine, expire_on_commit=False, info={"clinic_id": clinic.clinic_id}
+    )
+    db_module._session_factory = factory
     try:
         yield factory
     finally:
         db_module._engine = previous_engine
         db_module._session_factory = previous_factory
+        tenancy.invalidate_cache()
         engine.dispose()
 
 
@@ -132,7 +151,11 @@ class World:
     """The regression scenario's data, created once per test."""
 
     def __init__(self, session: Session) -> None:
+        # Read from the session's own binding rather than passed in, so a world
+        # can never be seeded for a clinic the test is not looking at.
+        self.clinic = clinic_of(session)
         self.provider = Provider(
+            clinic_id=self.clinic.clinic_id,
             full_name="Dr. Marion Varga",
             credentials="DDS",
             email="varga@example.test",
@@ -142,10 +165,15 @@ class World:
         session.add(self.provider)
         session.flush()
         session.add(
-            ProviderSpecialty(provider_id=self.provider.id, specialty="General Dentistry")
+            ProviderSpecialty(
+                clinic_id=self.clinic.clinic_id,
+                provider_id=self.provider.id,
+                specialty="General Dentistry",
+            )
         )
 
         self.cleaning = AppointmentType(
+            clinic_id=self.clinic.clinic_id,
             code="cleaning",
             name="Cleaning",
             description=None,
@@ -155,6 +183,7 @@ class World:
             sort_order=1,
         )
         self.checkup = AppointmentType(
+            clinic_id=self.clinic.clinic_id,
             code="checkup",
             name="Checkup",
             description=None,
@@ -166,14 +195,16 @@ class World:
         session.add_all([self.cleaning, self.checkup])
 
         self.patient = Patient(
+            clinic_id=self.clinic.clinic_id,
             full_name="Dana Whitfield",
-            phone="+15550101234",
+            phone="+16505550123",
             date_of_birth=date(1990, 4, 12),
             insurance_provider="Self-pay",
         )
         self.other_patient = Patient(
+            clinic_id=self.clinic.clinic_id,
             full_name="Alex Moreau",
-            phone="+15550109999",
+            phone="+16505550199",
             date_of_birth=date(1985, 1, 9),
             insurance_provider="Self-pay",
         )
@@ -200,6 +231,7 @@ class World:
         end = at(day, CLOSE_TIME)
         while cursor < end:
             row = AvailabilitySlot(
+                clinic_id=self.clinic.clinic_id,
                 provider_id=self.provider.id,
                 starts_at=cursor,
                 ends_at=cursor + timedelta(minutes=SLOT_MINUTES),
@@ -231,6 +263,7 @@ class World:
         """Insert a booked appointment and its interval claims (fixture booking)."""
         rows = [self.slot(day, shifted(day, start, index)) for index in range(intervals)]
         appointment = Appointment(
+            clinic_id=self.clinic.clinic_id,
             patient_id=patient_id,
             provider_id=self.provider.id,
             appointment_type_id=appointment_type.id,
@@ -245,7 +278,12 @@ class World:
         for row in rows:
             row.status = SlotStatus.OCCUPIED.value
             session.add(
-                SlotClaim(availability_slot_id=row.id, appointment_id=appointment.id, active=True)
+                SlotClaim(
+                    clinic_id=self.clinic.clinic_id,
+                    availability_slot_id=row.id,
+                    appointment_id=appointment.id,
+                    active=True,
+                )
             )
         session.flush()
         return appointment
@@ -268,6 +306,7 @@ def requester_for(session: Session, world: World) -> Iterator[Requester]:
         method=patient_sessions.VERIFICATION_BY_LOOKUP,
     )
     conversation = Conversation(
+        clinic_id=world.clinic.clinic_id,
         public_id=f"conv_{patient_session.id}",
         patient_session_id=patient_session.id,
         status="active",
@@ -279,7 +318,10 @@ def requester_for(session: Session, world: World) -> Iterator[Requester]:
     session.add(conversation)
     session.commit()
     yield Requester(
-        patient=world.patient, patient_session=patient_session, conversation=conversation
+        patient=world.patient,
+        patient_session=patient_session,
+        conversation=conversation,
+        clinic=world.clinic,
     )
     session.commit()
 
@@ -298,16 +340,13 @@ def world_session(db: SessionFactory) -> Iterator[tuple[Session, World, Requeste
 # --------------------------------------------------------------------------- #
 
 
-def tool_ctx(session: Session, requester: Requester) -> ToolContext:
-    return ToolContext(
-        session=session,
-        patient_session=requester.patient_session,
-        conversation_id=requester.conversation.id,
-    )
+def tool_ctx(session: Session, requester: Requester) -> TurnDeps:
+    """The request-scoped state a tool reads through ``InjectedState``."""
+    return deps_for(session, requester)
 
 
 def call(session: Session, requester: Requester, name: str, arguments: dict) -> dict:
-    return execute_tool(tool_ctx(session, requester), name, json.dumps(arguments))
+    return invoke_tool(tool_ctx(session, requester), name, arguments)
 
 
 def propose_move(
@@ -341,6 +380,7 @@ def requester_in(session: Session, patient_id: int, session_id: int, conversatio
         patient=session.get(Patient, patient_id),
         patient_session=session.get(PatientSession, session_id),
         conversation=session.get(Conversation, conversation_id),
+        clinic=clinic_of(session),
     )
 
 
@@ -348,7 +388,8 @@ def active_for(db: SessionFactory, patient_id: int) -> list[int]:
     """Every live booking: booked, in the future, not retired by a move."""
     with open_session(db) as session:
         return [
-            view.appointment.id for view in appointments.active_for_patient(session, patient_id)
+            view.appointment.id
+            for view in appointments.active_for_patient(session, clinic_of(session), patient_id)
         ]
 
 
@@ -454,9 +495,9 @@ def test_successful_reschedule_moves_the_appointment(db, world_session):
     # 3. Exactly one active appointment remains, in every view the app uses.
     assert active_for(db, world.patient.id) == [replacement_id]
     with open_session(db) as fresh:
-        upcoming = appointments.upcoming_for_patient(fresh, world.patient.id)
+        upcoming = appointments.upcoming_for_patient(fresh, world.clinic, world.patient.id)
         assert [view.appointment.id for view in upcoming] == [replacement_id]
-        listed = appointments.list_for_patient(fresh, world.patient.id)
+        listed = appointments.list_for_patient(fresh, world.clinic, world.patient.id)
         assert [view.appointment.id for view in listed if view.is_upcoming] == [replacement_id]
         # The retired original is still in the history, just not upcoming.
         assert {view.appointment.id for view in listed} == {original_id, replacement_id}
@@ -468,6 +509,7 @@ def test_successful_reschedule_moves_the_appointment(db, world_session):
         assert (
             is_interval_bookable(
                 fresh,
+                world.clinic,
                 provider_id=world.provider.id,
                 starts_at=at(ORIGINAL_DAY, time(10, 0)),
                 duration_minutes=60,
@@ -498,6 +540,7 @@ def test_staff_dashboard_sees_one_active_visit_with_full_history(db, world_sessi
     with open_session(db) as fresh:
         rows = staff_scheduling.list_appointments(
             fresh,
+            world.clinic,
             staff_scheduling.AppointmentFilters(
                 day_from=ORIGINAL_DAY, upcoming_only=True
             ),
@@ -506,8 +549,8 @@ def test_staff_dashboard_sees_one_active_visit_with_full_history(db, world_sessi
 
         original = staff_scheduling.get_appointment(fresh, world.original.id)
         replacement = staff_scheduling.get_appointment(fresh, replacement_id)
-        original_payload = staff_scheduling.appointment_dict(original)
-        replacement_payload = staff_scheduling.appointment_dict(replacement)
+        original_payload = staff_scheduling.appointment_dict(world.clinic, original)
+        replacement_payload = staff_scheduling.appointment_dict(world.clinic, replacement)
 
     assert original_payload["status"] == "rescheduled"
     assert original_payload["is_upcoming"] is False
@@ -823,12 +866,13 @@ def test_conflict_never_reaches_the_release_step(db, world_session):
 
 
 def test_reschedule_is_its_own_tool():
+    tool_names = {tool.name for tool in ALL_TOOLS}
     assert {
         "reschedule_appointment",
         "create_booking_proposal",
         "confirm_booking_proposal",
         "confirm_appointment_change",
-    } <= SCHEDULING_TOOL_NAMES
+    } <= tool_names
 
 
 def test_verified_parent_can_register_and_link_a_new_minor_for_family_booking(db, world_session):
@@ -872,12 +916,14 @@ def test_runtime_family_intent_returns_three_member_options(db, world_session):
     session, world, requester = world_session
     children = [
         Patient(
+                clinic_id=requester.clinic.clinic_id,
             full_name="Ellie Whitfield",
             phone=world.patient.phone,
             date_of_birth=date(2016, 5, 14),
             insurance_provider=world.patient.insurance_provider,
         ),
         Patient(
+                clinic_id=requester.clinic.clinic_id,
             full_name="Noah Whitfield",
             phone=world.patient.phone,
             date_of_birth=date(2017, 5, 14),
@@ -886,12 +932,14 @@ def test_runtime_family_intent_returns_three_member_options(db, world_session):
     ]
     session.add_all(children)
     session.flush()
-    group = FamilyGroup(name="Whitfield household", shared_phone=world.patient.phone)
+    group = FamilyGroup(
+    clinic_id=requester.clinic.clinic_id,name="Whitfield household", shared_phone=world.patient.phone)
     session.add(group)
     session.flush()
     session.add_all(
         [
             FamilyMember(
+                    clinic_id=requester.clinic.clinic_id,
                 family_group_id=group.id,
                 patient_id=world.patient.id,
                 relation_to_primary="self",
@@ -899,6 +947,7 @@ def test_runtime_family_intent_returns_three_member_options(db, world_session):
             ),
             *[
                 FamilyMember(
+                        clinic_id=requester.clinic.clinic_id,
                     family_group_id=group.id,
                     patient_id=child.id,
                     relation_to_primary="child",
@@ -1103,61 +1152,77 @@ def test_family_booking_path_is_unchanged(db, world_session):
     assert len(active_for(db, world.patient.id)) == 2
 
 
-def test_upgraded_database_accepts_the_rescheduled_status(tmp_path: Path):
+def test_upgraded_database_accepts_the_rescheduled_status(world):
     """An existing SQLite file gets the widened status CHECK on startup.
 
     A database created before ``rescheduled`` existed rejects that value outright.
     ``apply_additive_migrations`` must rebuild ``appointments`` (SQLite cannot
     alter a CHECK) while keeping every row, so confirmation can write the status.
+
+    The fixture is the *current* schema with only the status CHECK taken back to
+    its pre-reschedule wording. Hand-writing a small "old" table instead drifts
+    from the model on every added NOT NULL column, and a rebuild copies columns
+    rather than inventing values, so the test would fail on the fixture rather
+    than on the migration.
     """
     from sqlalchemy import text
+    from sqlalchemy.schema import CreateTable
 
     from app.migrations import apply_additive_migrations
 
-    engine = create_db_engine(f"sqlite+pysqlite:///{tmp_path / 'upgrade.db'}")
-    try:
-        # A table whose CHECK is the pre-reschedule definition, with a row in it.
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "CREATE TABLE appointments ("
-                    " id INTEGER PRIMARY KEY,"
-                    " patient_id INTEGER NOT NULL,"
-                    " starts_at DATETIME NOT NULL,"
-                    " ends_at DATETIME NOT NULL,"
-                    " duration_minutes INTEGER NOT NULL,"
-                    " status VARCHAR(16) NOT NULL DEFAULT 'booked'"
-                    "  CONSTRAINT ck_appointment_status CHECK"
-                    "  (status IN ('booked', 'cancelled', 'completed')))"
-                )
-            )
-            connection.execute(
-                text(
-                    "INSERT INTO appointments"
-                    " (id, patient_id, starts_at, ends_at, duration_minutes, status)"
-                    " VALUES (1, 7, '2030-05-01 10:00:00', '2030-05-01 11:00:00', 60, 'booked')"
-                )
-            )
+    session = world.session
+    provider = session.scalar(select(Provider))
+    appointment_type = session.scalar(select(AppointmentType))
+    assert provider is not None and appointment_type is not None
+    visit = Appointment(
+        clinic_id=world.clinic.clinic_id,
+        patient_id=world.patient.id,
+        provider_id=provider.id,
+        appointment_type_id=appointment_type.id,
+        starts_at=datetime(2030, 5, 1, 10, 0),
+        ends_at=datetime(2030, 5, 1, 11, 0),
+        duration_minutes=60,
+        status=AppointmentStatus.BOOKED.value,
+    )
+    session.add(visit)
+    session.commit()
 
-        with engine.begin() as connection:
-            applied = apply_additive_migrations(connection)
-            schema = connection.execute(
-                text("SELECT sql FROM sqlite_master WHERE name = 'appointments'")
-            ).scalar_one()
+    table = Base.metadata.tables["appointments"]
+    current_ddl = str(CreateTable(table).compile(dialect=world.engine.dialect)).strip()
+    legacy_ddl = current_ddl.replace(", 'rescheduled'", "")
+    assert legacy_ddl != current_ddl, "the model no longer spells the status CHECK that way"
 
-        assert "appointments.status:add 'rescheduled'" in applied
-        assert "rescheduled" in schema
-        # The rebuild kept the row.
-        with engine.begin() as connection:
-            row = connection.execute(
-                text("SELECT patient_id, status FROM appointments WHERE id = 1")
-            ).one()
-            assert tuple(row) == (7, "booked")
-            connection.execute(
-                text("UPDATE appointments SET status = 'rescheduled' WHERE id = 1")
-            )
-    finally:
-        engine.dispose()
+    # Put the table back the way that older version stored it, keeping the row.
+    with world.engine.begin() as connection:
+        connection.execute(text("PRAGMA legacy_alter_table = ON"))
+        connection.execute(text("ALTER TABLE appointments RENAME TO appointments_live"))
+        connection.execute(text(legacy_ddl))
+        copied = ", ".join(f'"{column.name}"' for column in table.columns)
+        connection.execute(
+            text(f"INSERT INTO appointments ({copied}) SELECT {copied} FROM appointments_live")
+        )
+        connection.execute(text("DROP TABLE appointments_live"))
+        connection.execute(text("PRAGMA legacy_alter_table = OFF"))
+
+    with world.engine.begin() as connection:
+        applied = apply_additive_migrations(connection)
+        schema = connection.execute(
+            text("SELECT sql FROM sqlite_master WHERE name = 'appointments'")
+        ).scalar_one()
+
+    assert "rebuild:appointments" in applied
+    assert "'rescheduled'" in schema
+    # The rebuild kept the row.
+    with world.engine.begin() as connection:
+        row = connection.execute(
+            text("SELECT patient_id, status FROM appointments WHERE id = :id"),
+            {"id": visit.id},
+        ).one()
+        assert tuple(row) == (world.patient.id, "booked")
+        connection.execute(
+            text("UPDATE appointments SET status = 'rescheduled' WHERE id = :id"),
+            {"id": visit.id},
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1236,7 +1301,8 @@ def test_appointment_list_marks_the_pair_for_deep_linking(db, world_session):
 
     with open_session(db) as fresh:
         payload = [
-            view.as_dict() for view in appointments.list_for_patient(fresh, world.patient.id)
+            view.as_dict()
+            for view in appointments.list_for_patient(fresh, world.clinic, world.patient.id)
         ]
 
     by_id = {entry["appointment_id"]: entry for entry in payload}

@@ -1,3 +1,10 @@
+/**
+ * A small dotted state pill for the overview page's health rows.
+ *
+ * The dot is the status cue and the text is the status: colour alone never
+ * carries meaning. Reads from the shared `pill--*` modifiers in `global.css`.
+ */
+
 type StatusTone = "ok" | "warn" | "error" | "neutral";
 
 type StatusPillProps = {

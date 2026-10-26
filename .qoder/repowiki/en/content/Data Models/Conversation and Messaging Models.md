@@ -9,10 +9,21 @@
 - [conversations_service.py](file://backend/app/services/conversations.py)
 - [patient_sessions_service.py](file://backend/app/services/patient_sessions.py)
 - [chat_api.py](file://backend/app/api/chat.py)
+- [staff_api.py](file://backend/app/api/staff.py)
+- [schemas.py](file://backend/app/schemas.py)
 - [runner.py](file://backend/app/agent/runner.py)
 - [operations.py](file://backend/app/models/operations.py)
 - [audit_service.py](file://backend/app/services/audit.py)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added new ConversationFeedback model documentation section
+- Updated core components to include patient feedback functionality
+- Enhanced message data model section with feedback relationships
+- Added feedback workflow diagrams and API endpoints
+- Updated troubleshooting guide with feedback-related issues
+- Added performance considerations for feedback queries
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -31,29 +42,32 @@ This document describes the data model and processing logic for conversations an
 
 - The **Conversation** entity, including status tracking, session ownership, patient association, scheduling intent, and lifecycle management.
 - The **Message** entity, including role-based message types, content storage, sequence ordering, tool-call pairing, and interactive card attachment.
-- The relationship between conversations and **PatientSession** and **Patient** entities.
-- Message persistence patterns, conversation state transitions, and audit trail requirements.
-- Example conversation flows from greeting through appointment scheduling to follow-up interactions.
-- Retention, archival, and performance considerations for large conversation histories.
+- The **ConversationFeedback** entity, enabling patients to rate assistant responses and provide optional feedback reasons.
+- The relationship between conversations, messages, and **PatientSession** and **Patient** entities.
+- Message persistence patterns, conversation state transitions, audit trail requirements, and feedback collection workflows.
+- Example conversation flows from greeting through appointment scheduling to follow-up interactions with feedback collection.
+- Retention, archival, and performance considerations for large conversation histories and feedback data.
 
-The goal is to make these models understandable for both technical readers and non-technical stakeholders who need to reason about how conversations are stored, replayed, and used across the application.
+The goal is to make these models understandable for both technical readers and non-technical stakeholders who need to reason about how conversations are stored, replayed, used across the application, and rated by patients.
 
 ## Project Structure
 The conversation and messaging domain spans several backend layers:
 
-- **Models**: Define database tables and relationships for conversations, messages, sessions, patients, and audit records.
+- **Models**: Define database tables and relationships for conversations, messages, feedback, sessions, patients, and audit records.
 - **Services**: Implement persistence helpers, session issuance, conversation history, provider message reconstruction, and feedback handling.
-- **API**: Expose endpoints for starting sessions, listing conversations, restoring threads, sending messages, submitting feedback, and resetting within a session.
+- **API**: Expose endpoints for starting sessions, listing conversations, restoring threads, sending messages, submitting feedback, viewing feedback analytics, and resetting within a session.
 - **Agent Runner**: Orchestrates one turn of conversation, including tool execution, assistant replies, card handling, and error recovery.
 - **Audit Model and Service**: Provide append-only audit trails for important state changes.
 
 ```mermaid
 graph TB
-API["Chat API<br/>REST endpoints"] --> Runner["Agent Runner<br/>turn orchestration"]
+API["Chat API<br/>REST endpoints"] --> StaffAPI["Staff API<br/>feedback analytics"]
+API --> Runner["Agent Runner<br/>turn orchestration"]
 Runner --> ConvService["Conversation Service<br/>persistence helpers"]
-Runner --> SessionService["Patient Session Service<br/>token and verification"]
+API --> SessionService["Patient Session Service<br/>token and verification"]
 ConvService --> ConvModel["Conversation Model"]
 ConvService --> MsgModel["Message Model"]
+ConvService --> FeedbackModel["ConversationFeedback Model"]
 SessionService --> SessionModel["PatientSession Model"]
 ConvModel --> PatientModel["Patient Model"]
 AuditModel["AuditRecord Model"] --> AuditService["Audit Service"]
@@ -61,6 +75,7 @@ AuditModel["AuditRecord Model"] --> AuditService["Audit Service"]
 
 **Diagram sources**
 - [chat_api.py:1-347](file://backend/app/api/chat.py#L1-L347)
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
 - [runner.py:1-800](file://backend/app/agent/runner.py#L1-L800)
 - [conversations_service.py:1-391](file://backend/app/services/conversations.py#L1-L391)
 - [patient_sessions_service.py:1-123](file://backend/app/services/patient_sessions.py#L1-L123)
@@ -72,6 +87,7 @@ AuditModel["AuditRecord Model"] --> AuditService["Audit Service"]
 
 **Section sources**
 - [chat_api.py:1-347](file://backend/app/api/chat.py#L1-L347)
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
 - [runner.py:1-800](file://backend/app/agent/runner.py#L1-L800)
 - [conversations_service.py:1-391](file://backend/app/services/conversations.py#L1-L391)
 - [patient_sessions_service.py:1-123](file://backend/app/services/patient_sessions.py#L1-L123)
@@ -92,7 +108,7 @@ A conversation represents one chat thread. It tracks:
 - Optional association with a verified patient.
 - Status, title, caller phone, and timestamps.
 - A canonical scheduling request that captures structured booking intent separate from conversational context.
-- Relationships to messages and booking proposals.
+- Relationships to messages, proposals, and feedback ratings.
 
 Key behaviors include:
 
@@ -115,6 +131,7 @@ A message represents one turn in a conversation. It supports:
 - Tool-call metadata and tool result linkage.
 - Interactive UI cards attached to assistant turns.
 - Timestamps for creation and completion.
+- One-to-one feedback rating relationship.
 
 Key behaviors include:
 
@@ -122,11 +139,37 @@ Key behaviors include:
 - Appending tool-result messages paired with assistant tool calls.
 - Reconstructing provider-compatible message sequences.
 - Producing client-safe projections that exclude internal tool payloads.
+- Supporting patient feedback ratings.
 
 **Section sources**
 - [conversations.py:87-127](file://backend/app/models/conversations.py#L87-L127)
 - [conversations_service.py:158-262](file://backend/app/services/conversations.py#L158-L262)
 - [conversations_service.py:285-366](file://backend/app/services/conversations.py#L285-L366)
+
+### ConversationFeedback
+A conversation feedback record represents a patient's rating of one assistant turn. It serves as the feedback loop mechanism where thumbs-down signals triage concerns for the front desk, paired with the stored transcript. The reason field is optional because patients should never have to write extensive complaints, but when provided, it becomes the most valuable line in the row.
+
+Key characteristics include:
+
+- One row per message: re-rating updates the existing row instead of stacking contradictory signals on the same turn.
+- Rating values: "up" or "down" indicating helpfulness.
+- Optional reason text (max 500 characters) only stored for negative feedback.
+- Unique constraint on message_id prevents duplicate feedback entries.
+- Indexed by conversation_id and created_at for efficient querying.
+
+Key behaviors include:
+
+- Creating new feedback entries for unrated messages.
+- Updating existing feedback when patients change their rating.
+- Truncating reason text to 500 characters for down votes.
+- Clearing reason text when patients switch from down to up ratings.
+
+**Updated** Added new ConversationFeedback model for patient response ratings
+
+**Section sources**
+- [conversations.py:129-158](file://backend/app/models/conversations.py#L129-L158)
+- [chat_api.py:277-322](file://backend/app/api/chat.py#L277-L322)
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
 
 ### PatientSession
 A patient session is the credential boundary for a browser tab or device. It stores:
@@ -174,12 +217,13 @@ These enums ensure consistent storage and comparison across models and services.
 - [base.py:77-87](file://backend/app/models/base.py#L77-L87)
 
 ## Architecture Overview
-The conversation architecture separates authentication, conversation persistence, AI orchestration, and client-facing APIs.
+The conversation architecture separates authentication, conversation persistence, AI orchestration, and client-facing APIs, now including feedback collection and analytics.
 
 ```mermaid
 sequenceDiagram
 participant Client as "Client"
 participant ChatAPI as "Chat API"
+participant StaffAPI as "Staff API"
 participant Runner as "Agent Runner"
 participant ConvSvc as "Conversation Service"
 participant SessionSvc as "Patient Session Service"
@@ -202,11 +246,17 @@ Runner->>Runner : "Execute tools if needed"
 Runner->>ConvSvc : "Append assistant/tool messages"
 ConvSvc->>DB : "Insert assistant/tool messages"
 ChatAPI-->>Client : "Reply + visible messages + cards"
+Client->>ChatAPI : "Submit feedback"
+ChatAPI->>DB : "Store/update feedback rating"
+StaffAPI->>DB : "Query feedback analytics"
+DB-->>StaffAPI : "Feedback counts and details"
 ```
 
 **Diagram sources**
 - [chat_api.py:111-163](file://backend/app/api/chat.py#L111-L163)
 - [chat_api.py:233-274](file://backend/app/api/chat.py#L233-L274)
+- [chat_api.py:277-322](file://backend/app/api/chat.py#L277-L322)
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
 - [runner.py:171-406](file://backend/app/agent/runner.py#L171-L406)
 - [conversations_service.py:41-58](file://backend/app/services/conversations.py#L41-L58)
 - [conversations_service.py:165-183](file://backend/app/services/conversations.py#L165-L183)
@@ -215,7 +265,7 @@ ChatAPI-->>Client : "Reply + visible messages + cards"
 ## Detailed Component Analysis
 
 ### Conversation Data Model
-The conversation model is the central thread container. It links to a patient session, optionally to a patient, and owns ordered messages and proposals.
+The conversation model is the central thread container. It links to a patient session, optionally to a patient, and owns ordered messages, proposals, and feedback ratings.
 
 ```mermaid
 classDiagram
@@ -234,6 +284,7 @@ class Conversation {
 +dict scheduling_request
 +messages()
 +proposals()
++feedback_ratings()
 }
 class Message {
 +int id
@@ -247,6 +298,16 @@ class Message {
 +string tool_call_id
 +string tool_name
 +list cards
++feedback_rating()
+}
+class ConversationFeedback {
++int id
++int conversation_id
++int message_id
++string rating
++string reason
++datetime created_at
++datetime updated_at
 }
 class PatientSession {
 +int id
@@ -273,16 +334,19 @@ class Patient {
 Conversation --> PatientSession : "belongs to"
 Conversation --> Patient : "optional association"
 Message --> Conversation : "part of"
+ConversationFeedback --> Conversation : "belongs to"
+ConversationFeedback --> Message : "rates"
 ```
 
 **Diagram sources**
 - [conversations.py:39-84](file://backend/app/models/conversations.py#L39-L84)
 - [conversations.py:87-127](file://backend/app/models/conversations.py#L87-L127)
+- [conversations.py:129-158](file://backend/app/models/conversations.py#L129-L158)
 - [sessions.py:35-76](file://backend/app/models/sessions.py#L35-L76)
 - [patients.py:18-46](file://backend/app/models/patients.py#L18-L46)
 
 #### Conversation Lifecycle and State Transitions
-Conversations begin as active and can be closed by the client’s “reset within session” action. Closing marks the end timestamp and updates status; the thread remains in the database for historical and staff review purposes.
+Conversations begin as active and can be closed by the client's "reset within session" action. Closing marks the end timestamp and updates status; the thread remains in the database for historical and staff review purposes.
 
 ```mermaid
 stateDiagram-v2
@@ -310,7 +374,7 @@ Messages are ordered by sequence within a conversation. Roles distinguish who pr
 - **tool**: tool result linked to an assistant tool call.
 - **system** and **staff**: notices used internally; they are not sent to the provider during replay.
 
-Threading is preserved by storing every turn shape so the full thread can be replayed exactly. Assistant turns that only issue tool calls store empty content and are followed by corresponding tool messages.
+Threading is preserved by storing every turn shape so the full thread can be replayed exactly. Assistant turns that only issue tool calls store empty content and are followed by corresponding tool messages. Each assistant message can receive one feedback rating.
 
 ```mermaid
 flowchart TD
@@ -334,6 +398,55 @@ Persist --> End(["Done"])
 - [conversations.py:87-127](file://backend/app/models/conversations.py#L87-L127)
 - [conversations_service.py:158-262](file://backend/app/services/conversations.py#L158-L262)
 
+### Conversation Feedback System
+The conversation feedback system enables patients to rate assistant responses and provides staff with analytics on conversation quality.
+
+#### Feedback Submission Flow
+Patients can rate any assistant message using thumbs up/down buttons. For negative feedback, an optional reason field allows patients to explain what could have been better. The system validates that feedback applies to assistant messages within the current conversation.
+
+```mermaid
+sequenceDiagram
+participant Patient as "Patient"
+participant UI as "Chat UI"
+participant API as "Chat API"
+participant DB as "Database"
+Patient->>UI : "Click thumbs up/down"
+UI->>API : "POST /feedback (message_id, rating, reason)"
+API->>DB : "Validate message belongs to conversation"
+API->>DB : "Check message role is 'assistant'"
+alt New feedback
+DB->>DB : "Create new ConversationFeedback row"
+else Existing feedback
+DB->>DB : "Update existing feedback row"
+end
+API-->>Patient : "Success response"
+```
+
+**Diagram sources**
+- [chat_api.py:277-322](file://backend/app/api/chat.py#L277-L322)
+- [conversations.py:129-158](file://backend/app/models/conversations.py#L129-L158)
+
+#### Staff Feedback Analytics
+Staff can view aggregated feedback metrics and detailed feedback entries to identify conversations requiring attention. The analytics endpoint provides counts by rating type and lists recent feedback with conversation context.
+
+```mermaid
+flowchart TD
+StaffRequest["Staff requests feedback analytics"] --> QueryCounts["Query feedback counts by rating"]
+QueryCounts --> QueryDetails["Query detailed feedback entries"]
+QueryDetails --> JoinData["Join with Message and Conversation tables"]
+JoinData --> FormatResponse["Format response with counts and details"]
+FormatResponse --> ReturnData["Return analytics to staff UI"]
+```
+
+**Diagram sources**
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
+
+**Section sources**
+- [chat_api.py:277-322](file://backend/app/api/chat.py#L277-L322)
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
+- [conversations.py:129-158](file://backend/app/models/conversations.py#L129-L158)
+- [schemas.py:241-258](file://backend/app/schemas.py#L241-L258)
+
 ### Relationship Between Conversations and Patient Sessions
 A patient session is the authorization boundary. Every conversation belongs to one session at a time. A session may span multiple conversations, representing multiple calls or threads for the same verified patient.
 
@@ -341,7 +454,7 @@ Important rules:
 
 - Access to a conversation requires a valid session token.
 - A conversation ID alone does not grant access.
-- Unverified sessions cannot resume another session’s conversation.
+- Unverified sessions cannot resume another session's conversation.
 - Verified sessions can claim a conversation belonging to the same patient and reset generation.
 - When resuming a closed conversation, the system reopens it for the current session.
 
@@ -546,11 +659,14 @@ API-->>Client : "Reply + messages + cards"
 - [runner.py:409-557](file://backend/app/agent/runner.py#L409-L557)
 - [conversations_service.py:218-262](file://backend/app/services/conversations.py#L218-L262)
 
-#### Follow-Up Interaction Flow
+#### Follow-Up Interaction Flow with Feedback
 1. Patient asks to see available times again.
 2. Runner detects a time re-ask and may replay earlier slot cards.
 3. If no fresh search occurs, the system ensures the latest grid is shown.
 4. Cards are reconciled with live proposals so held or booked slots are not offered again.
+5. Patient rates the assistant response as helpful or not helpful.
+6. For negative feedback, patient optionally provides a reason.
+7. Staff can view feedback analytics to identify problematic conversations.
 
 ```mermaid
 flowchart TD
@@ -561,46 +677,63 @@ FreshSearch --> |No| ReplayCards["Replay earlier slot cards"]
 NewCards --> Reconcile["Reconcile with live proposals"]
 ReplayCards --> Reconcile
 Reconcile --> Show["Show settled cards"]
+Show --> RateResponse["Patient rates response"]
+RateResponse --> Positive{"Positive feedback?"}
+Positive --> |Yes| StoreUp["Store 'up' rating"]
+Positive --> |No| AskReason{"Optional reason?"}
+AskReason --> StoreDown["Store 'down' rating + reason"]
+StoreUp --> StaffReview["Staff reviews analytics"]
+StoreDown --> StaffReview
 ```
 
 **Diagram sources**
 - [runner.py:76-84](file://backend/app/agent/runner.py#L76-L84)
 - [runner.py:337-351](file://backend/app/agent/runner.py#L337-L351)
 - [runner.py:664-690](file://backend/app/agent/runner.py#L664-L690)
+- [chat_api.py:277-322](file://backend/app/api/chat.py#L277-L322)
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
 
 **Section sources**
 - [chat_api.py:111-163](file://backend/app/api/chat.py#L111-L163)
 - [chat_api.py:233-274](file://backend/app/api/chat.py#L233-L274)
+- [chat_api.py:277-322](file://backend/app/api/chat.py#L277-L322)
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
 - [runner.py:76-84](file://backend/app/agent/runner.py#L76-L84)
 - [runner.py:337-351](file://backend/app/agent/runner.py#L337-L351)
 - [runner.py:664-690](file://backend/app/agent/runner.py#L664-L690)
 - [conversations_service.py:218-262](file://backend/app/services/conversations.py#L218-L262)
 
 ## Dependency Analysis
-The conversation and messaging subsystem has clear dependency boundaries:
+The conversation and messaging subsystem has clear dependency boundaries, now including feedback dependencies:
 
-- **API depends on services**: endpoints delegate session resolution, conversation loading, and message persistence to services.
+- **API depends on services**: endpoints delegate session resolution, conversation loading, message persistence, and feedback handling to services.
 - **Runner depends on services and models**: orchestration uses conversation and session services and reads/writes models.
-- **Services depend on models**: persistence helpers operate on SQLAlchemy models.
+- **Services depend on models**: persistence helpers operate on SQLAlchemy models including feedback.
 - **Models depend on base enums**: stable string values are defined centrally.
 - **Audit model is independent but referenced by services**: audit records are appended alongside business operations.
+- **Feedback model depends on conversation and message models**: feedback references both parent entities.
 
 ```mermaid
 graph LR
 ChatAPI["Chat API"] --> Runner["Agent Runner"]
 ChatAPI --> ConvSvc["Conversation Service"]
 ChatAPI --> SessionSvc["Patient Session Service"]
+StaffAPI["Staff API"] --> ConvSvc
 Runner --> ConvSvc
 Runner --> SessionSvc
 ConvSvc --> ConvModel["Conversation Model"]
 ConvSvc --> MsgModel["Message Model"]
+ConvSvc --> FeedbackModel["ConversationFeedback Model"]
 SessionSvc --> SessionModel["PatientSession Model"]
 ConvModel --> PatientModel["Patient Model"]
+FeedbackModel --> ConvModel
+FeedbackModel --> MsgModel
 AuditSvc["Audit Service"] --> AuditModel["AuditRecord Model"]
 ```
 
 **Diagram sources**
 - [chat_api.py:1-347](file://backend/app/api/chat.py#L1-L347)
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
 - [runner.py:1-800](file://backend/app/agent/runner.py#L1-L800)
 - [conversations_service.py:1-391](file://backend/app/services/conversations.py#L1-L391)
 - [patient_sessions_service.py:1-123](file://backend/app/services/patient_sessions.py#L1-L123)
@@ -612,6 +745,7 @@ AuditSvc["Audit Service"] --> AuditModel["AuditRecord Model"]
 
 **Section sources**
 - [chat_api.py:1-347](file://backend/app/api/chat.py#L1-L347)
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
 - [runner.py:1-800](file://backend/app/agent/runner.py#L1-L800)
 - [conversations_service.py:1-391](file://backend/app/services/conversations.py#L1-L391)
 - [patient_sessions_service.py:1-123](file://backend/app/services/patient_sessions.py#L1-L123)
@@ -622,7 +756,7 @@ AuditSvc["Audit Service"] --> AuditModel["AuditRecord Model"]
 - [audit_service.py:1-55](file://backend/app/services/audit.py#L1-L55)
 
 ## Performance Considerations
-Large conversation histories require careful attention to query patterns, serialization, and replay cost.
+Large conversation histories require careful attention to query patterns, serialization, and replay cost, now including feedback query optimization.
 
 Key considerations:
 
@@ -634,6 +768,8 @@ Key considerations:
 - **Card deduplication and settlement**: Card merging and settlement avoid duplicate or stale offers, improving UI responsiveness.
 - **Tool round limits**: Limits on tool rounds and calls prevent runaway loops and excessive external calls.
 - **Session scoping**: Queries always scope conversations to the current session, avoiding unnecessary joins and improving security.
+- **Feedback query optimization**: Feedback queries use indexes on conversation_id and created_at for efficient analytics.
+- **Unique constraint enforcement**: UniqueConstraint on message_id prevents duplicate feedback entries without expensive uniqueness checks.
 
 Recommended practices:
 
@@ -641,6 +777,7 @@ Recommended practices:
 - Paginate or limit conversation lists where appropriate.
 - Avoid exposing internal tool payloads in logs or analytics.
 - Use indexes already defined on conversation and message tables.
+- Monitor feedback query performance for large datasets.
 - Consider archival strategies for long-lived conversations (see Appendix).
 
 [No sources needed since this section provides general guidance]
@@ -652,13 +789,16 @@ Recommended practices:
 - **Empty message submission**: The API rejects empty messages with a validation error.
 - **Unconfigured AI provider**: A warning is logged when a message arrives without a configured provider, but the endpoint still proceeds.
 - **Conversation not found**: Accessing a conversation outside the current session returns a 404.
-- **Feedback validation**: Feedback must target an assistant message in the same conversation.
+- **Invalid feedback target**: Feedback must target an assistant message in the same conversation.
+- **Duplicate feedback**: Re-rating updates the existing row due to unique constraint on message_id.
+- **Excessive feedback reason length**: Reason text is truncated to 500 characters automatically.
 - **Tool failures**: Tool errors are captured and converted into safe assistant messages; history avoids dangling tool calls.
 - **Unexpected failures**: The runner rolls back partial writes and persists a fallback message so history remains consistent.
 
 **Section sources**
 - [chat_api.py:233-274](file://backend/app/api/chat.py#L233-L274)
 - [chat_api.py:277-322](file://backend/app/api/chat.py#L277-L322)
+- [chat_api.py:325-346](file://backend/app/api/chat.py#L325-L346)
 - [runner.py:264-292](file://backend/app/agent/runner.py#L264-L292)
 
 ### Debugging Conversation Threads
@@ -669,7 +809,8 @@ To debug a thread:
 3. Check assistant messages for tool_calls and cards.
 4. Verify tool messages for tool_call_id and tool_name.
 5. Review conversation status and timestamps.
-6. Correlate with audit records if a booking or handoff was involved.
+6. Check for feedback ratings on assistant messages.
+7. Correlate with audit records if a booking or handoff was involved.
 
 **Section sources**
 - [chat_api.py:207-230](file://backend/app/api/chat.py#L207-L230)
@@ -677,8 +818,24 @@ To debug a thread:
 - [conversations_service.py:334-366](file://backend/app/services/conversations.py#L334-L366)
 - [operations.py:56-80](file://backend/app/models/operations.py#L56-L80)
 
+### Debugging Feedback Issues
+To debug feedback problems:
+
+1. Verify the message exists and belongs to the conversation.
+2. Confirm the message role is "assistant".
+3. Check for existing feedback entries using the unique constraint.
+4. Validate feedback rating values ("up" or "down").
+5. Review reason text truncation for long comments.
+6. Check staff analytics endpoint for feedback aggregation.
+7. Monitor database constraints for integrity violations.
+
+**Section sources**
+- [chat_api.py:277-322](file://backend/app/api/chat.py#L277-L322)
+- [conversations.py:129-158](file://backend/app/models/conversations.py#L129-L158)
+- [staff_api.py:330-372](file://backend/app/api/staff.py#L330-L372)
+
 ## Conclusion
-The conversation and messaging models provide a robust foundation for patient-facing chat in a dental practice setting. Conversations track state, ownership, and scheduling intent, while messages preserve the full turn history needed for faithful AI replay. Patient sessions enforce secure access, and audit records capture important operational events. The design balances fidelity, security, and usability, with clear paths for extending retention, archival, and performance tuning as conversation volumes grow.
+The conversation and messaging models provide a robust foundation for patient-facing chat in a dental practice setting. Conversations track state, ownership, and scheduling intent, while messages preserve the full turn history needed for faithful AI replay. The new ConversationFeedback model enables patients to rate assistant responses, providing valuable quality signals for staff review. Patient sessions enforce secure access, and audit records capture important operational events. The design balances fidelity, security, and usability, with clear paths for extending retention, archival, and performance tuning as conversation volumes grow.
 
 [No sources needed since this section summarizes without analyzing specific files]
 
@@ -692,6 +849,7 @@ Current implementation retains conversations and messages for historical and sta
 - **Purge policy**: Remove expired sessions and associated conversations according to privacy requirements.
 - **Index maintenance**: Ensure indexes remain efficient after archival or purge operations.
 - **Audit retention**: Keep audit records longer than conversation transcripts for compliance.
+- **Feedback retention**: Consider separate retention policies for feedback data vs. conversation transcripts.
 
 [No sources needed since this section provides general guidance]
 
@@ -702,5 +860,17 @@ Consider:
 - Redacting sensitive tool payloads before exporting or analyzing transcripts.
 - Limiting client-side message cache size to improve UI performance.
 - Using sequence-based pagination for very long threads.
+- Archiving old feedback separately from active conversation data.
+
+[No sources needed since this section provides general guidance]
+
+### Feedback Data Management
+Feedback data requires special consideration:
+
+- **Storage efficiency**: Feedback rows are small but numerous; consider partitioning by date.
+- **Privacy considerations**: Feedback reasons may contain sensitive patient information.
+- **Analytics performance**: Aggregate feedback metrics efficiently using indexed queries.
+- **Data export**: Include feedback data in conversation exports for compliance requirements.
+- **Quality metrics**: Track positive/negative ratios over time to monitor AI performance.
 
 [No sources needed since this section provides general guidance]

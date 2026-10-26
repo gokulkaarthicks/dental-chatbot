@@ -1,3 +1,10 @@
+/**
+ * Page chrome for the operations overview: brand, nav, footer, one main slot.
+ *
+ * The patient chat deliberately does not use this shell -- it has its own
+ * full-height layout -- so this exists only for `/overview`.
+ */
+
 import type { ReactNode } from "react";
 import { CircleDot } from "lucide-react";
 

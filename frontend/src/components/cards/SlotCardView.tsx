@@ -1,3 +1,10 @@
+/**
+ * The availability grid: one card of clickable times, grouped by day.
+ *
+ * A click picks a time; it never books. Selecting creates a server-side hold
+ * that the patient then confirms, which is why a stale grid can be shown safely.
+ */
+
 import { ChevronRight } from "lucide-react";
 
 import { formatSlotTime, CardShell } from "./CardShell";

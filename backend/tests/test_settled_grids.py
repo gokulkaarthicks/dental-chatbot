@@ -31,11 +31,14 @@ def test_a_plain_offer_is_not_settled_before_anything_is_held(scenario) -> None:
     session, requester = scenario
     cards = _grid(["a", "b"])
 
-    assert scheduling.settles_plain_grids(session, requester.conversation.id) == (
+    assert scheduling.settles_plain_grids(session, requester.clinic, requester.conversation.id) == (
         False,
         None,
     )
-    out = scheduling.settle_superseded_grids(session, requester.conversation.id, cards)
+    out = scheduling.settle_superseded_grids(
+        session,
+        requester.clinic, requester.conversation.id, cards
+    )
     assert all(card["settled"] is False for card in out)
     # The caller's cards are untouched: this is a projection, not a mutation.
     assert all(card["settled"] is False for card in cards)
@@ -45,6 +48,7 @@ def test_a_held_proposal_retires_every_ordinary_grid(scenario) -> None:
     session, requester = scenario
     first = scheduling.find_availability(
         session,
+        requester.clinic,
         patient=requester.patient,
         appointment_type_code="cleaning",
         date_phrases=[SEARCH_PHRASE],
@@ -61,14 +65,15 @@ def test_a_held_proposal_retires_every_ordinary_grid(scenario) -> None:
     session.commit()
     assert held.get("proposal_id"), held
 
-    settled, reason = scheduling.settles_plain_grids(session, requester.conversation.id)
+    settled, reason = scheduling.settles_plain_grids(session, requester.clinic, requester.conversation.id)
     assert settled is True
     # Nothing is booked yet, so the reason must be the hold, not a booking:
     # the UI words these differently.
     assert reason == "hold"
 
     out = scheduling.settle_superseded_grids(
-        session, requester.conversation.id, _grid(["a", "b"])
+        session,
+        requester.clinic, requester.conversation.id, _grid(["a", "b"])
     )
     assert all(card["settled"] is True for card in out)
     assert all(card["settled_by"] == "hold" for card in out)
@@ -80,6 +85,7 @@ def test_an_explicitly_requested_extra_visit_stays_bookable(scenario) -> None:
     session, requester = scenario
     first = scheduling.find_availability(
         session,
+        requester.clinic,
         patient=requester.patient,
         appointment_type_code="cleaning",
         date_phrases=[SEARCH_PHRASE],
@@ -96,7 +102,10 @@ def test_an_explicitly_requested_extra_visit_stays_bookable(scenario) -> None:
     session.commit()
 
     extra = _grid(["a"], additional_visit=True)
-    out = scheduling.settle_superseded_grids(session, requester.conversation.id, extra)
+    out = scheduling.settle_superseded_grids(
+        session,
+        requester.clinic, requester.conversation.id, extra
+    )
     # Adding a separate visit is a different request; its times stay clickable.
     assert out[0]["settled"] is False
     assert "settled_by" not in out[0]
@@ -106,6 +115,7 @@ def test_a_held_proposal_retires_family_options_too(scenario) -> None:
     session, requester = scenario
     first = scheduling.find_availability(
         session,
+        requester.clinic,
         patient=requester.patient,
         appointment_type_code="cleaning",
         date_phrases=[SEARCH_PHRASE],
@@ -132,7 +142,8 @@ def test_a_held_proposal_retires_family_options_too(scenario) -> None:
         }
     ]
     out = scheduling.settle_superseded_grids(
-        session, requester.conversation.id, family
+        session,
+        requester.clinic, requester.conversation.id, family
     )
 
     assert out[0]["settled"] is True

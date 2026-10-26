@@ -1,0 +1,15 @@
+schema_version: 1
+module_path: backend/bootstrap_cli
+title: FastAPI Application Bootstrap, CLI & SQLite Lifecycle
+scope:
+    - backend/app/main.py
+    - backend/app/bootstrap.py
+    - backend/app/cli.py
+    - backend/app/config.py
+    - backend/app/db.py
+    - backend/app/migrations.py
+    - backend/app/seed_fixtures.py
+    - backend/server.py
+source_files: []
+depends_on: []
+related_to: []

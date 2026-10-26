@@ -1,4 +1,4 @@
-"""Staff-side appointment management (Phase 4).
+"""Staff-side appointment management.
 
 Same rules as the patient chatbot, different entry point
 --------------------------------------------------------
@@ -40,6 +40,7 @@ from typing import Any
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.db import require_clinic_id
 from app.models import (
     Appointment,
     AppointmentStatus,
@@ -60,7 +61,7 @@ from app.services.availability_engine import (
 )
 from app.services.proposals import new_public_id
 from app.services.transactions import SlotConflictError, WriteTransactionError, write_transaction
-from app.timeutil import clinic_now, day_slot_starts
+from app.tenancy import ClinicContext
 
 logger = logging.getLogger(__name__)
 
@@ -96,16 +97,19 @@ class AppointmentFilters:
 # --------------------------------------------------------------------------- #
 
 
-def appointment_dict(row: Appointment) -> dict[str, Any]:
+def appointment_dict(clinic: ClinicContext, row: Appointment) -> dict[str, Any]:
     """One appointment in the shape the dashboard table renders.
 
     Patient contact details are included because this payload is only ever
     served to an authenticated staff session. It is not a public schema.
+
+    ``clinic`` supplies "now": whether a visit still counts as upcoming depends
+    on the practice's own timezone, not the server's.
     """
     patient = row.patient
     provider = row.provider
     appt_type = row.appointment_type
-    now = clinic_now()
+    now = clinic.config.now()
     return {
         "id": row.id,
         "starts_at": row.starts_at.isoformat(timespec="minutes"),
@@ -188,7 +192,7 @@ def _base_query() -> Select:
 # --------------------------------------------------------------------------- #
 
 
-def list_appointments(session: Session, filters: AppointmentFilters) -> list[Appointment]:
+def list_appointments(session: Session, clinic: ClinicContext, filters: AppointmentFilters) -> list[Appointment]:
     """Filtered list, ordered the way a front desk reads it.
 
     A specific day (or an explicit end bound) reads chronologically. The default
@@ -225,7 +229,7 @@ def list_appointments(session: Session, filters: AppointmentFilters) -> list[App
         statement = statement.where(
             Appointment.status == AppointmentStatus.BOOKED.value,
             Appointment.rescheduled_to_id.is_(None),
-            Appointment.starts_at >= clinic_now(),
+            Appointment.starts_at >= clinic.config.now(),
         )
     if filters.search:
         needle = f"%{filters.search.strip().lower()}%"
@@ -241,7 +245,7 @@ def list_appointments(session: Session, filters: AppointmentFilters) -> list[App
     rows = list(session.scalars(statement).unique())
 
     if not explicit_day:
-        now = clinic_now()
+        now = clinic.config.now()
         upcoming = [row for row in rows if row.starts_at >= now]
         past = [row for row in rows if row.starts_at < now]
         past.sort(key=lambda row: row.starts_at, reverse=True)
@@ -253,7 +257,9 @@ def get_appointment(session: Session, appointment_id: int) -> Appointment | None
     return session.scalar(_base_query().where(Appointment.id == appointment_id))
 
 
-def list_appointments_by_patient(session: Session, patient_id: int) -> list[Appointment]:
+def list_appointments_by_patient(
+    session: Session, clinic: ClinicContext, patient_id: int
+) -> list[Appointment]:
     """One patient's visits, soonest upcoming first, then most recent past."""
     rows = list(
         session.scalars(
@@ -262,7 +268,7 @@ def list_appointments_by_patient(session: Session, patient_id: int) -> list[Appo
             .order_by(Appointment.starts_at)
         ).unique()
     )
-    now = clinic_now()
+    now = clinic.config.now()
     upcoming = [row for row in rows if row.starts_at >= now]
     past = [row for row in rows if row.starts_at < now]
     past.sort(key=lambda row: row.starts_at, reverse=True)
@@ -352,6 +358,7 @@ def _audit(
 
 def _patient_conflict(
     session: Session,
+    clinic: ClinicContext,
     *,
     patient_id: int,
     starts_at: datetime,
@@ -360,6 +367,7 @@ def _patient_conflict(
 ) -> bool:
     """True when this patient already has a booked visit overlapping the interval."""
     statement = select(Appointment.id).where(
+        Appointment.clinic_id == clinic.clinic_id,
         Appointment.patient_id == patient_id,
         Appointment.status == AppointmentStatus.BOOKED.value,
         Appointment.starts_at < ends_at,
@@ -377,9 +385,15 @@ def _resolve_patient(session: Session, patient_id: int) -> Patient:
     return patient
 
 
-def _resolve_type(session: Session, code_or_id: int | str | None) -> AppointmentType:
+def _resolve_type(
+    session: Session, clinic: ClinicContext, code_or_id: int | str | None
+) -> AppointmentType:
+    # The tenant is passed through rather than left to the session's filter:
+    # ``code`` is only unique inside one clinic, and the dashboard can be pointed
+    # at a clinic by header, so the lookup has to be scoped to the same tenant the
+    # rest of the action is validated against.
     appointment_type, _ = resolve_appointment_type(
-        session, None if code_or_id is None else str(code_or_id)
+        session, clinic, None if code_or_id is None else str(code_or_id)
     )
     if appointment_type is None:
         raise StaffActionError("unknown_type", "That visit type is not offered.")
@@ -395,6 +409,7 @@ def _resolve_provider(session: Session, provider_id: int) -> Provider:
 
 def _validate_new_time(
     session: Session,
+    clinic: ClinicContext,
     *,
     patient_id: int,
     provider_id: int,
@@ -404,6 +419,7 @@ def _validate_new_time(
 ) -> list:
     rows = is_interval_bookable(
         session,
+        clinic,
         provider_id=provider_id,
         starts_at=starts_at,
         duration_minutes=appointment_type.duration_minutes,
@@ -417,6 +433,7 @@ def _validate_new_time(
         )
     if _patient_conflict(
         session,
+        clinic,
         patient_id=patient_id,
         starts_at=rows[0].starts_at,
         ends_at=rows[-1].ends_at,
@@ -431,6 +448,7 @@ def _validate_new_time(
 
 def create_appointment(
     session: Session,
+    clinic: ClinicContext,
     *,
     staff: StaffUser,
     patient_id: int,
@@ -442,12 +460,13 @@ def create_appointment(
     """Book a new appointment: validate, claim, audit, commit -- atomically."""
     patient = _resolve_patient(session, patient_id)
     provider = _resolve_provider(session, provider_id)
-    appointment_type = _resolve_type(session, appointment_type_code)
+    appointment_type = _resolve_type(session, clinic, appointment_type_code)
 
     try:
         with write_transaction(session) as txn:
             rows = _validate_new_time(
                 session,
+                clinic,
                 patient_id=patient.id,
                 provider_id=provider.id,
                 starts_at=starts_at,
@@ -455,6 +474,7 @@ def create_appointment(
             )
             now = utcnow()
             group = BookingGroup(
+                clinic_id=require_clinic_id(session),
                 public_id=new_public_id("grp"),
                 conversation_id=None,
                 proposal_id=None,
@@ -469,6 +489,7 @@ def create_appointment(
             session.flush()
 
             appointment = Appointment(
+                clinic_id=require_clinic_id(session),
                 patient_id=patient.id,
                 provider_id=provider.id,
                 appointment_type_id=appointment_type.id,
@@ -486,6 +507,7 @@ def create_appointment(
             for row in rows:
                 session.add(
                     SlotClaim(
+                        clinic_id=require_clinic_id(session),
                         availability_slot_id=row.id,
                         appointment_id=appointment.id,
                         active=True,
@@ -528,6 +550,7 @@ def create_appointment(
 
 def reschedule_appointment(
     session: Session,
+    clinic: ClinicContext,
     *,
     staff: StaffUser,
     appointment_id: int,
@@ -560,7 +583,9 @@ def reschedule_appointment(
     original_duration = existing.duration_minutes
     target_provider_id = provider_id or existing.provider_id
     appointment_type = (
-        _resolve_type(session, appointment_type_code) if appointment_type_code else existing.appointment_type
+        _resolve_type(session, clinic, appointment_type_code)
+        if appointment_type_code
+        else existing.appointment_type
     )
     if appointment_type is None:
         raise StaffActionError("unknown_type", "That appointment type is no longer available.")
@@ -571,6 +596,7 @@ def reschedule_appointment(
             # move cannot leave the original appointment partially released.
             rows = _validate_new_time(
                 session,
+                clinic,
                 patient_id=existing.patient_id,
                 provider_id=target_provider_id,
                 starts_at=starts_at,
@@ -589,6 +615,7 @@ def reschedule_appointment(
             session.flush()
 
             replacement = Appointment(
+                clinic_id=require_clinic_id(session),
                 patient_id=existing.patient_id,
                 provider_id=target_provider_id,
                 appointment_type_id=appointment_type.id,
@@ -612,6 +639,7 @@ def reschedule_appointment(
             for row in rows:
                 session.add(
                     SlotClaim(
+                        clinic_id=require_clinic_id(session),
                         availability_slot_id=row.id,
                         appointment_id=replacement.id,
                         active=True,
@@ -730,6 +758,7 @@ def complete_appointment(session: Session, *, staff: StaffUser, appointment_id: 
 
 def available_slots(
     session: Session,
+    clinic: ClinicContext,
     *,
     provider_id: int | None,
     appointment_type_code: str | int | None,
@@ -741,7 +770,7 @@ def available_slots(
     everywhere else, and returns only times that are genuinely free right now.
     Nothing is held, so showing options never blocks a patient.
     """
-    appointment_type = _resolve_type(session, appointment_type_code)
+    appointment_type = _resolve_type(session, clinic, appointment_type_code)
     providers = (
         [_resolve_provider(session, provider_id)]
         if provider_id is not None
@@ -753,9 +782,10 @@ def available_slots(
     )
     results: list[dict[str, Any]] = []
     for provider in providers:
-        for start in day_slot_starts(day):
+        for start in clinic.config.day_slot_starts(day):
             rows = is_interval_bookable(
                 session,
+                clinic,
                 provider_id=provider.id,
                 starts_at=start,
                 duration_minutes=appointment_type.duration_minutes,

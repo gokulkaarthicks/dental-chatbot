@@ -1,9 +1,14 @@
 /**
- * Small presentation helpers shared by the dashboard sections.
+ * Badges and layout states shared by the dashboard sections.
  *
  * Status tone lives in one place so "booked" looks the same in the schedule,
  * the patient record, and the overview. A badge is always text first; colour is
  * a secondary cue and every badge keeps the same shape.
+ *
+ * Only things that render belong here. Pure text formatting -- relative times,
+ * audit labels, enum wording reused by a table cell -- lives in
+ * `lib/staffFormat.ts`, so a section can pick up one label without importing
+ * components it does not draw.
  */
 
 import type { ReactNode } from "react";
@@ -11,7 +16,6 @@ import type { ReactNode } from "react";
 import type {
   AppointmentStatus,
   RequestStatus,
-  RequestType,
   StaffAlertSeverity,
   StaffAlertStatus,
 } from "../../api/staff";
@@ -74,47 +78,6 @@ export function requestStatusBadge(status: RequestStatus) {
   return <Badge tone={tone}>{REQUEST_LABELS[status]}</Badge>;
 }
 
-export const REQUEST_TYPE_LABELS: Record<RequestType, string> = {
-  callback: "Callback",
-  reschedule: "Reschedule",
-  clinical_question: "Clinical question",
-  billing: "Billing / insurance",
-};
-
-export const ALERT_KIND_LABELS: Record<string, string> = {
-  emergency: "Emergency",
-  urgent_callback: "Urgent callback",
-  insurance_verification: "Insurance verification",
-  assistance_request: "Assistance request",
-};
-
-/** Human relative time for "3 min ago" style labels. */
-export function relativeTime(iso: string | null): string {
-  if (!iso) return "--";
-  const then = new Date(iso);
-  if (Number.isNaN(then.getTime())) return iso;
-  const seconds = Math.round((Date.now() - then.getTime()) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} hr ago`;
-  const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return then.toLocaleDateString();
-}
-
-/** Absolute timestamp for tooltips and detail panes. */
-export function fullTimestamp(iso: string | null): string {
-  if (!iso) return "--";
-  const value = new Date(iso);
-  if (Number.isNaN(value.getTime())) return iso;
-  return value.toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
-
 /**
  * Skeleton placeholders. They hold the exact height of the rows they replace so
  * the layout does not jump when data lands, and stay low-opacity so they never
@@ -132,15 +95,6 @@ export function SkeletonRows({ rows = 4, label = "Loading" }: { rows?: number; l
           <span className="skel" style={{ width: "12%", height: 18 }} />
         </div>
       ))}
-    </div>
-  );
-}
-
-export function LoadingBlock({ label = "Loading…" }: { label?: string }) {
-  return (
-    <div className="sd-loading" role="status" aria-live="polite">
-      <span className="sd-loading__spinner" aria-hidden="true" />
-      <span>{label}</span>
     </div>
   );
 }
@@ -174,23 +128,4 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
       ) : null}
     </div>
   );
-}
-
-/** Audit actions are machine names; give the drawer something readable. */
-export function describeAction(action: string): string {
-  const map: Record<string, string> = {
-    "appointment.created.staff": "Booked by staff",
-    "appointment.rescheduled.staff": "Rescheduled by staff",
-    "appointment.cancelled.staff": "Cancelled by staff",
-    "appointment.completed.staff": "Marked completed",
-    "alert.open": "Reopened",
-    "alert.acknowledged": "Acknowledged",
-    "alert.resolved": "Resolved",
-    "alert.severity_changed": "Severity changed",
-    "request.pending": "Returned to pending",
-    "request.in_progress": "Picked up",
-    "request.resolved": "Resolved",
-    "request.approved": "Approved",
-  };
-  return map[action] ?? action;
 }

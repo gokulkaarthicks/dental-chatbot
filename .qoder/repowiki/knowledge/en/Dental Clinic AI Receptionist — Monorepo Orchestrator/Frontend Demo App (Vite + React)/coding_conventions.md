@@ -1,3 +1,0 @@
-- Cross-cutting state (chat sessions, card scheduling) is exposed as React hooks in `hooks/` rather than lifted into page components.
-- HTTP access goes through typed client modules in `api/` (`client.ts`, `staff.ts`) instead of ad-hoc fetch calls inside components.
-- Reusable UI fragments live under `components/` (cards, chat bubbles, buttons) and are imported by both patient and staff pages.

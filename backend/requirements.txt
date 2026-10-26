@@ -2,5 +2,11 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 SQLAlchemy==2.0.36
 pydantic==2.10.4
-# DeepSeek is called over the OpenAI-compatible HTTP API (Phase 2).
 httpx==0.28.1
+# Turn orchestration: one compiled graph per process, no checkpointer (SQLite is
+# the source of truth for conversation state).
+langgraph==1.2.18
+# The chat model and native tool calling. DeepSeek exposes an OpenAI-compatible
+# endpoint, so ChatOpenAI is the client rather than a hand-written HTTP loop.
+langchain-core==1.7.0
+langchain-openai==1.7.3

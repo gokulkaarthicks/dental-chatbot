@@ -1,8 +1,20 @@
-"""Database engine, session factory, and pragma enforcement.
+"""Database engine, session factory, pragma enforcement, and tenant binding.
 
 SQLite pragmas that are *connection scoped* (foreign keys, busy timeout) are set
 on every new connection through an event listener; WAL mode is persistent once
 the database file is created and is also asserted per connection for safety.
+
+Tenant binding
+--------------
+The engine and session factory stay global and tenant-blind. A *session* is what
+carries the tenant, in ``session.info["clinic_id"]``, and ``app.models.base`` reads
+that value to filter selects and to reject cross-tenant writes. Keeping the tenant
+on the session (rather than on the engine or in a contextvar) means:
+
+* one connection pool serves every clinic;
+* a session that was never bound can only run unscoped administrative reads,
+  which is exactly what the tenant resolver and the bootstrap path need;
+* forgetting to bind is visible: the insert guard fails on the first write.
 """
 
 from __future__ import annotations
@@ -24,6 +36,7 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 BUSY_TIMEOUT_MS = 5000
+CLINIC_ID_KEY = "clinic_id"
 
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
@@ -78,14 +91,52 @@ def get_session_factory() -> sessionmaker[Session]:
     return _session_factory
 
 
-def new_session() -> Session:
-    return get_session_factory()()
+def new_session(clinic_id: int | None = None) -> Session:
+    session = get_session_factory()()
+    if clinic_id is not None:
+        bind_tenant(session, clinic_id)
+    return session
+
+
+def bind_tenant(session: Session, clinic_id: int) -> Session:
+    """Attach a tenant to an open session. Idempotent.
+
+    Called by the HTTP dependency once the tenant is resolved, and by services
+    that build their own transaction. Rebinding to a *different* clinic is a bug
+    (it would silently re-scope reads already taken through the old tenant), so it
+    raises rather than swapping underneath the caller.
+    """
+    existing = session.info.get(CLINIC_ID_KEY)
+    if existing is not None and int(existing) != int(clinic_id):
+        raise RuntimeError(
+            f"session already bound to clinic_id={existing}; refusing to rebind to "
+            f"clinic_id={clinic_id}"
+        )
+    session.info[CLINIC_ID_KEY] = int(clinic_id)
+    return session
+
+
+def bound_clinic_id(session: Session) -> int | None:
+    value = session.info.get(CLINIC_ID_KEY)
+    return int(value) if value is not None else None
+
+
+def require_clinic_id(session: Session) -> int:
+    """The tenant this session is bound to.
+
+    Services call this instead of trusting a passed-in clinic id, so a route that
+    resolved tenant A cannot hand a service tenant B's identifier.
+    """
+    clinic_id = bound_clinic_id(session)
+    if clinic_id is None:
+        raise RuntimeError("session is not bound to a clinic")
+    return clinic_id
 
 
 @contextmanager
-def session_scope() -> Iterator[Session]:
+def session_scope(clinic_id: int | None = None) -> Iterator[Session]:
     """Transaction boundary: commit on success, rollback on any exception."""
-    session = new_session()
+    session = new_session(clinic_id)
     try:
         yield session
         session.commit()
@@ -118,14 +169,37 @@ def delete_database_files() -> None:
             logger.info("Removed %s", candidate)
 
 
-def count_rows(session: Session, table: str) -> int:
-    # Table names are internal constants only; never user input.
-    return int(session.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar_one())
+def count_rows(session: Session, table: str, clinic_id: int | None = None) -> int:
+    """Raw-table count.
+
+    This is SQL rather than an ORM select, so the tenant criterion in
+    ``app.models.base`` does not reach it. When the table is tenant-owned the
+    clinic must be named -- taken from the session binding by default -- because a
+    count of every clinic's rows reported as one clinic's is worse than no count.
+    """
+    owner = clinic_id if clinic_id is not None else bound_clinic_id(session)
+    if owner is None:
+        return int(session.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar_one())
+    return int(
+        session.execute(
+            text(f'SELECT COUNT(*) FROM "{table}" WHERE clinic_id = :clinic_id'),
+            {"clinic_id": owner},
+        ).scalar_one()
+    )
 
 
 def get_db() -> Iterator[Session]:
-    """FastAPI dependency. Read-mostly endpoints never mutate, but a shared
-    session per request keeps behaviour uniform as workflows land later."""
+    """FastAPI dependency.
+
+    Deliberately *unbound*: the tenant is not known until the dependency graph has
+    resolved it from the request, and resolving it requires reading the ``clinics``
+    table without a tenant filter. Routes bind the session through
+    :func:`bind_tenant` as part of that resolution, so every handler downstream of
+    ``CurrentClinic`` is already scoped.
+
+    Read-mostly endpoints never mutate, but a shared session per request keeps
+    behaviour uniform as workflows land later.
+    """
     session = new_session()
     try:
         yield session

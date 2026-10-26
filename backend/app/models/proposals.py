@@ -26,13 +26,13 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, ProposalStatus, TimestampMixin, UTCDateTime
+from app.models.base import Base, ClinicScoped, ProposalStatus, TimestampMixin, UTCDateTime
 
 if TYPE_CHECKING:
     from app.models.conversations import Conversation
 
 
-class BookingProposal(Base, TimestampMixin):
+class BookingProposal(Base, ClinicScoped, TimestampMixin):
     """A multi-appointment suggestion awaiting an explicit confirmation."""
 
     __tablename__ = "booking_proposals"
@@ -138,10 +138,12 @@ class BookingProposal(Base, TimestampMixin):
         Index("ix_proposals_conversation", "conversation_id"),
         Index("ix_proposals_generation", "reset_generation"),
         Index("ix_proposals_confirm_key", "confirm_key"),
+        Index("ix_proposals_clinic_status", "clinic_id", "status"),
+        Index("ix_proposals_clinic_conversation", "clinic_id", "conversation_id"),
     )
 
 
-class ProposalItem(Base):
+class ProposalItem(Base, ClinicScoped):
     """One patient/timetable row inside a proposal.
 
     Availability is *snapshotted* at creation time (``proposed_starts_at``,
@@ -196,10 +198,13 @@ class ProposalItem(Base):
 
     proposal: Mapped[BookingProposal] = relationship(back_populates="items")
 
-    __table_args__ = (Index("ix_proposal_items_proposal", "proposal_id"),)
+    __table_args__ = (
+        Index("ix_proposal_items_proposal", "proposal_id"),
+        Index("ix_proposal_items_clinic_proposal", "clinic_id", "proposal_id"),
+    )
 
 
-class BookingGroup(Base, TimestampMixin):
+class BookingGroup(Base, ClinicScoped, TimestampMixin):
     """Everything confirmed together, so a family booking can be reasoned about.
 
     ``confirmation_key`` is UNIQUE: replaying the same confirmation (double
@@ -232,4 +237,5 @@ class BookingGroup(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_booking_groups_conversation", "conversation_id"),
         Index("ix_booking_groups_patient_session", "patient_session_id"),
+        Index("ix_booking_groups_clinic_conversation", "clinic_id", "conversation_id"),
     )

@@ -1,0 +1,1 @@
+Single Vite-built React app that serves the patient front-desk chat and the staff receptionist dashboard against a shared SQLite-backed REST API.

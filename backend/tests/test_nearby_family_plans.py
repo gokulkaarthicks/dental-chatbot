@@ -1,3 +1,12 @@
+"""Nearby family plans: ranked by total gap, not by back-to-back or nothing.
+
+A household can rarely be seated in one unbroken block, so the engine also
+offers the closest reasonable alternative. These tests pin the two properties
+that make that offer honest: the scoring prefers the smallest total gap between
+members, and a plan with a gap still reports ``back_to_back`` false while its
+window spans the first start to the last end.
+"""
+
 from datetime import datetime, timedelta
 
 from app.models import AppointmentType

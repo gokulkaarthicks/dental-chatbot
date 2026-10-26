@@ -15,7 +15,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app import __version__
 from app.api import chat, clinic, demo, health, scheduling, staff
 from app.bootstrap import bootstrap_database
-from app.clinic import CLINIC
 from app.config import get_settings
 from app.observability import (
     REQUEST_ID_HEADER,
@@ -206,9 +205,11 @@ def create_app(*, run_bootstrap: bool = True) -> FastAPI:
         title="Dental AI Receptionist API",
         version=__version__,
         description=(
-            f"Backend for the **{CLINIC.name}** receptionist demo "
-            f"({CLINIC.city}, {CLINIC.state}). All clinic data is fictional.\n\n"
-            "Phase 1 exposes health, clinic configuration, and demo status. "
+            "Backend for the dental-practice receptionist demo. Every clinic is a "
+            "tenant: ``X-Clinic`` selects one (slug or id), and a request that names "
+            "none gets the default. Call ``GET /api/clinics`` for the available slugs. "
+            "All clinic data is fictional.\n\n"
+            "Phase 1 exposes health, the clinic directory, and demo status. "
             "Phase 2 adds the patient chat: opaque patient sessions, a DeepSeek-backed "
             "receptionist with validated tools, and registration/verification."
         ),
@@ -222,6 +223,10 @@ def create_app(*, run_bootstrap: bool = True) -> FastAPI:
     # Dev-only origins: Vite on 5173, the containerised frontend on 8080.
     # The session token travels in a header (never a cookie), so credentials
     # stay disabled and only the explicit headers below are allowed.
+    #
+    # ``X-Clinic`` is on the list because tenant selection is a header, not a
+    # cookie: a browser must be able to name the clinic it is talking to without
+    # the server guessing from ambient state.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8080"],
@@ -229,6 +234,7 @@ def create_app(*, run_bootstrap: bool = True) -> FastAPI:
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=[
             "Content-Type",
+            "X-Clinic",
             "X-Patient-Session",
             "X-Staff-CSRF",
             REQUEST_ID_HEADER,

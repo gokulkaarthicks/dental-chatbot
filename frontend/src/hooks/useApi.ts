@@ -1,3 +1,11 @@
+/**
+ * The generic read hook: fetch on mount, expose loading/error, allow a reload.
+ *
+ * `AsyncState` is the shape every loader in the app returns, so a component can
+ * treat health, clinic, and demo status the same way without knowing which
+ * endpoint it is reading.
+ */
+
 import { useCallback, useEffect, useState } from "react";
 
 export type AsyncState<T> = {

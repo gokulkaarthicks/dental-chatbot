@@ -125,16 +125,22 @@ def authenticate(session: Session, *, username: str, password: str) -> tuple[Sta
 
 
 def create_session(session: Session, *, user: StaffUser) -> IssuedStaffSession:
-    """Open a server-side session for ``user`` and return the raw tokens once."""
+    """Open a server-side session for ``user`` and return the raw tokens once.
+
+    The session inherits its tenant from the account rather than from the request:
+    a staff cookie is proof of *which clinic's dashboard* was signed in to, so the
+    pin cannot be negotiated by whoever presents it.
+    """
     token = _issue_token()
     csrf_token = _issue_token()
     now = utcnow()
     expires_at = now + SESSION_TTL
     record = StaffSession(
+        clinic_id=user.clinic_id,
         staff_user_id=user.id,
         token_hash=hash_token(token),
         csrf_token_hash=hash_token(csrf_token),
-        reset_generation=generations.ensure_generation(session),
+        reset_generation=generations.ensure_generation(session, clinic_id=user.clinic_id),
         created_at=now,
         last_seen_at=now,
         expires_at=expires_at,
@@ -154,16 +160,27 @@ def resolve(session: Session, token: str | None) -> StaffSession | None:
     """The live session for a raw cookie token, or ``None``.
 
     Rejects unknown, expired, revoked, and pre-reset tokens identically.
+
+    Crosses tenants on purpose, mirroring
+    :func:`app.services.patient_sessions.find_by_token`: the caller needs to see
+    that a valid cookie belongs to *another clinic* and answer 403 rather than the
+    401 a tenant-filtered lookup would produce, which would put the dashboard into
+    a re-login loop against the wrong clinic.
     """
     if not token or len(token) < 20 or len(token) > 128:
         return None
-    record = session.scalar(select(StaffSession).where(StaffSession.token_hash == hash_token(token)))
+    record = session.scalar(
+        select(StaffSession)
+        .where(StaffSession.token_hash == hash_token(token))
+        .execution_options(tenant_scoped=False)
+    )
     if record is None or record.revoked_at is not None:
         return None
     expires_at = _aware(record.expires_at)
     if expires_at is None or expires_at <= utcnow():
         return None
-    if record.reset_generation != (generations.get_generation(session) or record.reset_generation):
+    current = generations.get_generation(session, clinic_id=record.clinic_id)
+    if record.reset_generation != (current or record.reset_generation):
         return None
     return record
 

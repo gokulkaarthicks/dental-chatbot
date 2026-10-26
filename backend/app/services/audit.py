@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.db import bound_clinic_id, require_clinic_id
 from app.models import AuditRecord, utcnow
 from app.services.generations import get_generation
 
@@ -35,7 +36,12 @@ def record(
         serialised = json.dumps(details, sort_keys=True, default=str)
     else:
         serialised = details
+    # The tenant comes from the session rather than an argument: an audit row
+    # records what *this* transaction did, so letting a caller name a clinic
+    # would be the one way to write a finding against somebody else's record.
+    clinic_id = require_clinic_id(session)
     entry = AuditRecord(
+        clinic_id=clinic_id,
         occurred_at=utcnow(),
         actor_type=actor_type,
         actor_id=None if actor_id is None else str(actor_id),
@@ -44,7 +50,7 @@ def record(
         entity_id=None if entity_id is None else str(entity_id),
         conversation_id=conversation_id,
         details=serialised,
-        reset_generation=get_generation(session) or "unknown",
+        reset_generation=get_generation(session, clinic_id=clinic_id) or "unknown",
         visibility=visibility,
     )
     session.add(entry)
@@ -63,6 +69,12 @@ def trailer_committed(session: Session, trailer_key: str, entity_type: str | Non
         AuditRecord.action == "booking.commit",
         AuditRecord.visibility == "COMMIT",
     )
+    # ``details`` is a projection, so the ORM tenant criterion is not applied for
+    # us. Only filter when the session knows its tenant -- a bootstrap read has
+    # none and legitimately sees the whole file.
+    clinic_id = bound_clinic_id(session)
+    if clinic_id is not None:
+        statement = statement.where(AuditRecord.clinic_id == clinic_id)
     if entity_type:
         statement = statement.where(AuditRecord.entity_type == entity_type)
     for details in session.scalars(statement):

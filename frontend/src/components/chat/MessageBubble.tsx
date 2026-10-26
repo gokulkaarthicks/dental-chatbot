@@ -1,3 +1,12 @@
+/**
+ * One turn in the thread: the text, then any cards, then the rating control.
+ *
+ * Memoised on its own props so a new turn does not re-render the whole history.
+ * Cards are reconciled against the live proposal state at render time -- a card
+ * persisted as "pending" in SQLite still renders correctly after the proposal
+ * behind it was accepted or expired.
+ */
+
 import { memo, useState } from "react";
 import { ThumbsDown, ThumbsUp } from "lucide-react";
 

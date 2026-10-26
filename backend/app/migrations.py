@@ -8,8 +8,15 @@ Strategy: ``Base.metadata.create_all()`` already creates *missing tables*, so
 only *missing columns on existing tables* need handling. Each entry below is
 idempotent and runs inside the caller's transaction. Nothing is ever dropped or
 rewritten, so this is safe to run on every startup -- with one exception: a
-changed CHECK constraint (SQLite cannot alter one) is applied by rebuilding the
-table from the model definition and copying every row across.
+changed CHECK constraint, or a UNIQUE/PK clause that has to become per-clinic
+(SQLite can do neither with ``ALTER TABLE``) is applied by rebuilding that table
+from the model definition and copying every row across.
+
+Phase 7 is that exception at scale. Tenancy adds a non-nullable ``clinic_id`` to
+every tenant table and turns seven globally-unique columns into per-clinic ones,
+so the reconciliation here is: make tenant 1 exist, add the columns (backfilling
+them with 1, because a row written before tenancy belonged to the only clinic
+there was), then rebuild the tables whose constraint shape changed.
 """
 
 from __future__ import annotations
@@ -17,8 +24,13 @@ from __future__ import annotations
 import logging
 import re
 
-from sqlalchemy import inspect, text
+from sqlalchemy import UniqueConstraint, inspect, text
+from sqlalchemy.dialects import sqlite
 from sqlalchemy.engine import Connection
+from sqlalchemy.orm import Session
+from sqlalchemy.schema import CreateIndex, CreateTable
+
+from app.models import Base
 
 logger = logging.getLogger(__name__)
 
@@ -102,61 +114,108 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # --- Contact details for an unverified emergency caller ----------------
     ("patient_sessions", "contact_name", "VARCHAR(120)"),
     ("patient_sessions", "contact_phone", "VARCHAR(32)"),
+    # --- Chat-side identity lookups are counted and can lock out -----------
+    ("patient_sessions", "verification_attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("patient_sessions", "verification_locked_until", "DATETIME"),
     ("staff_alerts", "caller_name", "VARCHAR(120)"),
     ("staff_alerts", "caller_phone", "VARCHAR(32)"),
+    # --- Phase 7: tenancy ---------------------------------------------------
+    # ``ADD COLUMN`` cannot carry a foreign key when the column is NOT NULL with
+    # a default, so the REFERENCES clause is deliberately absent here: the
+    # rebuilt tables get the real key from their model definition, and the rest
+    # are held honest by the write guard in ``app.models.base`` plus the
+    # ``PRAGMA foreign_key_check`` that closes every rebuild.
+    ("app_metadata", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("appointment_types", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("appointments", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("audit_records", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("availability_slots", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("booking_groups", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("booking_proposals", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("clinic_insurance_plans", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("clinic_policies", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("conversation_feedback", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("conversations", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("family_groups", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("family_members", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("idempotency_records", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("messages", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("patient_sessions", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("patients", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("pending_requests", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("proposal_items", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("provider_specialties", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("providers", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("seed_manifests", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("slot_claims", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("staff_alerts", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("staff_sessions", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("staff_users", "clinic_id", "INTEGER NOT NULL DEFAULT 1"),
 )
 
 # Indexes introduced after the corresponding tables already existed. Without
 # these, an upgraded database would silently lose the constraints concurrency
 # depends on (``create_all`` only creates missing *tables*, never missing
-# indexes). Each statement is idempotent via ``IF NOT EXISTS`` and uses the
-# exact DDL SQLAlchemy generates, so fresh and upgraded databases converge.
-_REQUIRED_INDEXES: tuple[tuple[str, str], ...] = (
-    (
-        "uq_slot_claims_active_slot",
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_slot_claims_active_slot "
-        "ON slot_claims (availability_slot_id) WHERE active = 1",
-    ),
-    (
-        "uq_slot_claims_active_appointment_slot",
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_slot_claims_active_appointment_slot "
-        "ON slot_claims (appointment_id, availability_slot_id) WHERE active = 1",
-    ),
-    (
-        "ix_slot_claims_appointment",
-        "CREATE INDEX IF NOT EXISTS ix_slot_claims_appointment ON slot_claims (appointment_id)",
-    ),
-    (
-        "uq_idempotency_scope_key",
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_idempotency_scope_key "
-        "ON idempotency_records (scope, key)",
-    ),
-    (
-        "ix_proposals_confirm_key",
-        "CREATE INDEX IF NOT EXISTS ix_proposals_confirm_key ON booking_proposals (confirm_key)",
-    ),
-    (
-        "ix_staff_alerts_dedupe",
-        "CREATE INDEX IF NOT EXISTS ix_staff_alerts_dedupe ON staff_alerts (dedupe_key)",
-    ),
-    (
-        "ix_pending_requests_dedupe",
-        "CREATE INDEX IF NOT EXISTS ix_pending_requests_dedupe ON pending_requests (dedupe_key)",
-    ),
-    (
-        "uq_staff_username",
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_staff_username ON staff_users (username) "
-        "WHERE username IS NOT NULL",
-    ),
-    (
-        "ix_staff_sessions_user",
-        "CREATE INDEX IF NOT EXISTS ix_staff_sessions_user ON staff_sessions (staff_user_id)",
-    ),
-    (
-        "ix_staff_sessions_expires",
-        "CREATE INDEX IF NOT EXISTS ix_staff_sessions_expires ON staff_sessions (expires_at)",
-    ),
+# indexes). Hand-writing the DDL for each one drifts the moment a model changes,
+# so every statement is compiled from the model itself and a fresh database and
+# an upgraded one are built from a single source of truth. That covers the
+# tenancy set too: ``ix_<table>_clinic_id`` on all 26 tenant tables, the uniques
+# that used to be global (``uq_idempotency_scope_key``, ``uq_staff_username``) and
+# the widened hot-path reads rely on (``ix_appointments_clinic_provider_start``,
+# ``ix_slots_clinic_status_start``, ``ix_messages_clinic_conversation``).
+_DIALECT = sqlite.dialect()
+
+
+def _declared_index_specs() -> tuple[tuple[str, str, tuple[str, ...], str], ...]:
+    """``(name, table, columns, ddl)`` for every index the models declare."""
+    specs = []
+    for table in Base.metadata.tables.values():
+        for index in table.indexes:
+            ddl = str(CreateIndex(index).compile(dialect=_DIALECT)).strip()
+            specs.append((index.name, table.name, tuple(col.name for col in index.columns), ddl))
+    return tuple(specs)
+
+
+_INDEX_SPECS = _declared_index_specs()
+_INDEX_DDL = {name: ddl for name, _table, _columns, ddl in _INDEX_SPECS}
+
+# Name + statement, as the module's readable contract: any of these that a given
+# database is missing gets created before it is used again.
+_REQUIRED_INDEXES: tuple[tuple[str, str], ...] = tuple(
+    (name, ddl) for name, _table, _columns, ddl in _INDEX_SPECS
 )
+
+
+def _sync_indexes(
+    connection: Connection, existing_tables: set[str], applied: list[str]
+) -> None:
+    """Create the indexes the models declare and this database lacks.
+
+    A same-named index with a *different* column list is dropped and rebuilt.
+    ``uq_idempotency_scope_key`` was ``(scope, key)`` and is now
+    ``(clinic_id, scope, key)``, and SQLite has no ``ALTER INDEX`` -- so "an index
+    of that name exists" is not proof the constraint is the right constraint.
+    Leaving the old one in place would let one clinic's idempotency key block
+    another clinic's retry, which is the failure tenancy is meant to remove.
+    """
+    inspector = inspect(connection)
+    for name, table, columns, ddl in _INDEX_SPECS:
+        if table not in existing_tables:
+            continue
+        stored = next((i for i in inspector.get_indexes(table) if i["name"] == name), None)
+        if stored is not None and tuple(stored["column_names"] or ()) == columns:
+            continue
+        replacing = stored is not None
+        if replacing:
+            connection.execute(text(f'DROP INDEX IF EXISTS "{name}"'))
+        try:
+            connection.execute(text(ddl))
+        except Exception:  # noqa: BLE001 - never block startup on an index
+            logger.warning("Could not create index %s on %s", name, table, exc_info=True)
+            applied.append(f"index:{name}:dropped" if replacing else f"index:{name}:failed")
+            continue
+        applied.append(f"index:{name}:replaced" if replacing else f"index:{name}")
+        logger.info("Created missing index %s on %s", name, table)
 
 
 def _appointment_status_allows_rescheduled(connection: Connection) -> bool:
@@ -178,63 +237,63 @@ def _appointment_status_allows_rescheduled(connection: Connection) -> bool:
     )
 
 
-def _rebuild_appointments_table(connection: Connection) -> None:
-    """Recreate ``appointments`` with the expanded status CHECK, preserving every row.
+def _rebuild_table(connection: Connection, table_name: str, *, reason: str) -> None:
+    """Recreate one table from its model definition, preserving every row.
 
-    SQLite has no ``ALTER TABLE ... DROP CONSTRAINT``. The documented sequence is:
-    turn foreign keys off, capture and expand the stored table DDL, rename the
-    old table, recreate that same schema with the new status value, copy every
-    row, drop the old table, recreate its indexes, then re-check foreign keys.
-    Anything that
-    referenced ``appointments`` by name follows the rename automatically because
-    SQLite rewrites those references with ``legacy_alter_table`` off (the
-    default).
+    SQLite cannot add or drop a UNIQUE clause, change a primary key, or alter a
+    CHECK with ``ALTER TABLE``. The documented sequence is: turn foreign keys
+    off, rename the old table aside, create the table as the models now declare
+    it, copy the columns the two versions share, drop the old table, put the
+    indexes back, then re-check foreign keys.
 
-    This is the one non-additive step in this module. It keeps every existing
-    row -- nothing is dropped -- but it runs inside the caller's transaction, so
-    a failure leaves the original table in place.
+    ``legacy_alter_table`` is switched ON for the rename on purpose. With the
+    default behaviour SQLite rewrites *every other table's* ``REFERENCES`` clause
+    to follow the temporary ``_old`` name, so dropping that table would leave
+    them dangling; staying legacy keeps those references pointing at the name
+    this function is about to recreate.
+
+    Indexes whose names the model owns are rebuilt from the model instead of
+    replayed from ``sqlite_master``: a stored ``uq_staff_username`` was global,
+    and re-running its text would reinstall exactly the constraint tenancy
+    removed. Anything else the table had is carried over verbatim.
+
+    This is the only non-additive step in the module. It never drops a row or a
+    column, and it runs inside the caller's transaction, so a failure leaves the
+    original table in place.
     """
-    original_sql = connection.execute(
-        text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'appointments'")
-    ).scalar_one()
-    upgraded_sql, replacements = re.subn(
-        r"(status\s+IN\s*\()([^)]*)(\))",
-        lambda match: (
-            match.group(1) + match.group(2).rstrip() + ", 'rescheduled'" + match.group(3)
+    model_table = Base.metadata.tables[table_name]
+    new_ddl = str(CreateTable(model_table).compile(dialect=_DIALECT)).strip()
+    stored_indexes = connection.execute(
+        text(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type = 'index' AND tbl_name = :table AND sql IS NOT NULL"
         ),
-        original_sql,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-    if replacements != 1:
-        raise RuntimeError("Could not locate the appointments status constraint")
-    index_sql = [
-        row[0]
-        for row in connection.execute(
-            text(
-                "SELECT sql FROM sqlite_master WHERE type = 'index' "
-                "AND tbl_name = 'appointments' AND sql IS NOT NULL"
-            )
-        )
-        if row[0]
-    ]
+        {"table": table_name},
+    ).fetchall()
+    declared_names = {index.name for index in model_table.indexes}
+    carry_over = [row[1] for row in stored_indexes if row[0] not in declared_names]
 
     legacy = connection.execute(text("PRAGMA legacy_alter_table")).scalar()
     connection.execute(text("PRAGMA legacy_alter_table = ON"))
     connection.execute(text("PRAGMA foreign_keys = OFF"))
     try:
-        connection.execute(text('ALTER TABLE "appointments" RENAME TO "appointments_old"'))
-        connection.execute(text(upgraded_sql))
-        columns = {
-            row[1] for row in connection.execute(text('PRAGMA table_info("appointments_old")'))
+        connection.execute(text(f'ALTER TABLE "{table_name}" RENAME TO "{table_name}_old"'))
+        connection.execute(text(new_ddl))
+        stored_columns = {
+            row[1] for row in connection.execute(text(f'PRAGMA table_info("{table_name}_old")'))
         }
-        shared = ", ".join(sorted(columns))
+        shared = sorted(stored_columns & {column.name for column in model_table.columns})
+        if not shared:
+            raise RuntimeError(f"{table_name} rebuild found no columns in common")
+        quoted = ", ".join(f'"{name}"' for name in shared)
         connection.execute(
-            text(f'INSERT INTO "appointments" ({shared}) SELECT {shared} FROM "appointments_old"')
+            text(f'INSERT INTO "{table_name}" ({quoted}) SELECT {quoted} FROM "{table_name}_old"')
         )
-        connection.execute(text('DROP TABLE "appointments_old"'))
-        for statement in index_sql:
+        connection.execute(text(f'DROP TABLE "{table_name}_old"'))
+        for statement in carry_over:
             connection.execute(text(statement))
+        for name in sorted(declared_names):
+            connection.execute(text(_INDEX_DDL[name]))
     finally:
         connection.execute(text("PRAGMA foreign_keys = ON"))
         if legacy is not None:
@@ -243,15 +302,104 @@ def _rebuild_appointments_table(connection: Connection) -> None:
     violations = connection.execute(text("PRAGMA foreign_key_check")).fetchall()
     if violations:
         raise RuntimeError(
-            f"appointments rebuild left {len(violations)} foreign-key violation(s); aborting."
+            f"{table_name} rebuild ({reason}) left {len(violations)} "
+            "foreign-key violation(s); aborting."
         )
+    logger.info("Rebuilt %s (%s)", table_name, reason)
+
+
+def _constraint_reasons(inspector, model_table) -> list[str]:  # noqa: ANN001
+    """Why a stored table cannot satisfy its model definition without a rebuild.
+
+    Column *sets* are compared rather than constraint names, because a
+    pre-tenancy database wrote ``UNIQUE (seed_key)`` with no name at all -- matching
+    by name would miss the very change this exists to catch. Only a *missing*
+    declaration counts as a reason: a stored constraint the models no longer
+    declare is exactly what the rebuild discards, and treating extras as reasons
+    would mistake a partial unique index for a table constraint and rebuild the
+    same table on every startup.
+    """
+    name = model_table.name
+    reasons: list[str] = []
+    stored_pk = tuple(inspector.get_pk_constraint(name)["constrained_columns"])
+    model_pk = sorted(column.name for column in model_table.primary_key.columns)
+    if sorted(stored_pk) != model_pk:
+        reasons.append(f"primary key {tuple(stored_pk)} -> {tuple(model_pk)}")
+    stored_uq = {
+        tuple(sorted(item["column_names"])) for item in inspector.get_unique_constraints(name)
+    }
+    for constraint in model_table.constraints:
+        if not isinstance(constraint, UniqueConstraint):
+            continue
+        columns = tuple(sorted(column.name for column in constraint.columns))
+        if columns not in stored_uq:
+            reasons.append(f"unique {columns} is missing")
+    return reasons
+
+
+def _ensure_legacy_clinic_row(connection: Connection) -> int:
+    """Make tenant 1 exist before any ``clinic_id`` backfill runs.
+
+    ``ADD COLUMN ... NOT NULL DEFAULT 1`` attributes every pre-tenancy row to
+    clinic id 1, so that id has to be the clinic the database was written for --
+    otherwise an upgrade quietly re-homes a whole practice's patients. The row
+    comes from the same template the seeding path uses, so an upgraded volume and
+    a fresh container describe the same practice instead of drifting apart.
+
+    The session works on a savepoint because the caller owns the transaction:
+    seeding the tenant row must be committable without committing (or rolling
+    back) the rest of the migration around it.
+    """
+    from app.seed_tenants import TENANT_PLANS
+    from app.services import seed
+
+    plan = TENANT_PLANS[0]
+
+    def _stored_id() -> int | None:
+        return connection.execute(
+            text("SELECT id FROM clinics WHERE slug = :slug"), {"slug": plan.slug}
+        ).scalar()
+
+    clinic_id = _stored_id()
+    if clinic_id is None:
+        session = Session(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            seed.ensure_clinic_rows(session, TENANT_PLANS[:1])
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+        clinic_id = _stored_id()
+    if clinic_id is None or int(clinic_id) != 1:
+        raise RuntimeError(
+            f"legacy backfill needs clinic 1 to be {plan.slug!r}, found {clinic_id}; "
+            "refusing to attribute existing rows to the wrong clinic"
+        )
+    return int(clinic_id)
 
 
 def apply_additive_migrations(connection: Connection) -> list[str]:
-    """Add any missing columns. Returns a list of applied changes for logging."""
+    """Bring an existing database up to the models. Returns a list of applied changes.
+
+    The order is the whole trick: the tenant row first, so a ``clinic_id`` whose
+    default is 1 points at something real; columns next, so a rebuild's model DDL
+    finds them already populated and copies the backfilled values across; the
+    rebuilds last, because they recreate constraints from the current models.
+    """
     inspector = inspect(connection)
     existing_tables = set(inspector.get_table_names())
     applied: list[str] = []
+
+    needs_backfill = any(
+        table in existing_tables
+        and column not in {item["name"] for item in inspector.get_columns(table)}
+        for table, column, _ddl in _ADDED_COLUMNS
+        if column == "clinic_id"
+    )
+    if "clinics" in existing_tables and needs_backfill:
+        _ensure_legacy_clinic_row(connection)
 
     for table, column, ddl in _ADDED_COLUMNS:
         if table not in existing_tables:
@@ -264,32 +412,28 @@ def apply_additive_migrations(connection: Connection) -> list[str]:
         logger.info("Added missing column %s.%s", table, column)
 
     # A status CHECK is baked into the table definition, so a database created
-    # before ``rescheduled`` existed would reject the new value with a
-    # constraint error mid-transaction. SQLite cannot alter a constraint, so the
-    # table is rebuilt with the current model definition (see helper below).
-    if "appointments" in existing_tables and not _appointment_status_allows_rescheduled(
-        connection
-    ):
-        _rebuild_appointments_table(connection)
-        applied.append("appointments.status:add 'rescheduled'")
-        logger.info("Rebuilt appointments table to allow status 'rescheduled'")
+    # before ``rescheduled`` existed would reject the new value mid-transaction.
+    # Tenancy has the same shape of problem: ``UNIQUE (seed_key)`` and a
+    # single-column ``app_metadata`` primary key are not per-clinic and cannot be
+    # altered into one, so those tables are rebuilt from their models.
+    inspector = inspect(connection)
+    for model_table in Base.metadata.tables.values():
+        if model_table.name not in existing_tables:
+            continue
+        reasons = _constraint_reasons(inspector, model_table)
+        if model_table.name == "appointments" and not _appointment_status_allows_rescheduled(
+            connection
+        ):
+            reasons.append("status CHECK does not allow 'rescheduled'")
+        if not reasons:
+            continue
+        _rebuild_table(connection, model_table.name, reason="; ".join(reasons))
+        applied.append(f"rebuild:{model_table.name}")
 
     # ``create_all`` creates missing tables but never missing indexes, so an
     # upgraded database would silently lose the unique hold constraints that
-    # make concurrent booking safe. Create whatever the models declare.
-    present: dict[str, set[str]] = {
-        table: {index["name"] for index in inspector.get_indexes(table)}
-        for table in existing_tables
-    }
-    for name, statement in _REQUIRED_INDEXES:
-        if any(name in names for names in present.values()):
-            continue
-        try:
-            connection.execute(text(statement))
-            applied.append(f"index:{name}")
-            logger.info("Created missing index %s", name)
-        except Exception:  # noqa: BLE001 - never block startup on an index
-            logger.warning("Could not create index %s", name, exc_info=True)
+    # make concurrent booking safe.
+    _sync_indexes(connection, existing_tables, applied)
 
     # Keys that existed before the `public` flag was introduced hold demo state
     # that is safe to expose; mark them explicitly so `/api/demo/status` keeps

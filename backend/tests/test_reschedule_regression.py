@@ -17,9 +17,9 @@ broke in the October 27 -> October 29 bug:
 * a repeated confirmation replays;
 * an explicitly requested *additional* visit never cancels the existing one.
 
-The whole flow is driven through the real tool layer (``execute_tool``, what the
-model calls) and the real service layer (what the UI calls). No model and no
-HTTP server is involved.
+The whole flow is driven through the real tools (``ToolNode`` and the registered
+``@tool`` functions, which is what the model calls) and the real service layer
+(what the UI calls). No model and no HTTP server is involved.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agent.tools import ToolContext, execute_tool
+from app.agent.context import TurnDeps
 from app.models import (
     Appointment,
     AppointmentStatus,
@@ -48,6 +48,7 @@ from app.services.proposals import (
     pending_for_conversation,
 )
 from app.services.scheduling import Requester
+from tests.support import clinic_of, deps_for, invoke_tool
 
 # The scenario's fixtures are shared with the workflow suite so the two files
 # describe the same world: the October 27 cleaning and its open replacement day.
@@ -76,16 +77,13 @@ ALTERNATE_TIME = time(15, 0)
 # --------------------------------------------------------------------------- #
 
 
-def tool_ctx(session: Session, requester: Requester) -> ToolContext:
-    return ToolContext(
-        session=session,
-        patient_session=requester.patient_session,
-        conversation_id=requester.conversation.id,
-    )
+def tool_ctx(session: Session, requester: Requester) -> TurnDeps:
+    """The request-scoped state a tool reads through ``InjectedState``."""
+    return deps_for(session, requester)
 
 
 def call(session: Session, requester: Requester, name: str, arguments: dict) -> dict:
-    return execute_tool(tool_ctx(session, requester), name, json.dumps(arguments))
+    return invoke_tool(tool_ctx(session, requester), name, arguments)
 
 
 def move(
@@ -168,7 +166,9 @@ def staff_upcoming_ids(db: SessionFactory, patient_id: int) -> list[int]:
 
     with open_session(db) as session:
         rows = staff_scheduling.list_appointments(
-            session, staff_scheduling.AppointmentFilters(upcoming_only=True)
+            session,
+            clinic_of(session),
+            staff_scheduling.AppointmentFilters(upcoming_only=True),
         )
         return [row.id for row in rows if row.patient_id == patient_id]
 
@@ -178,7 +178,7 @@ def upcoming_from_patient_chat(db: SessionFactory, patient_id: int) -> list[dict
     with open_session(db) as session:
         return [
             view.as_dict()
-            for view in appointments.list_for_patient(session, patient_id)
+            for view in appointments.list_for_patient(session, clinic_of(session), patient_id)
             if view.is_upcoming
         ]
 
@@ -338,6 +338,7 @@ def test_clicking_a_replacement_slot_keeps_the_move(db, world_session):
         requester=requester,
         options=scheduling.options_for_slots(
             session,
+            requester.clinic,
             appointment_type=world.cleaning,
             slot_ids=[world.stable_slot(REPLACEMENT_DAY, ALTERNATE_TIME)],
             patient_id=world.patient.id,
@@ -604,7 +605,7 @@ def test_patient_history_keeps_the_old_visit_but_not_as_upcoming(db, world_sessi
     replacement_id = done["appointments"][0]["appointment_id"]
 
     with open_session(db) as fresh:
-        history = appointments.list_for_patient(fresh, world.patient.id)
+        history = appointments.list_for_patient(fresh, clinic_of(fresh), world.patient.id)
     by_id = {view.appointment.id: view for view in history}
     assert set(by_id) == {world.original.id, replacement_id}
     assert by_id[world.original.id].is_upcoming is False
@@ -949,7 +950,7 @@ def test_searching_while_a_move_is_pending_returns_reschedule_cards(db, world_se
         session,
         requester,
         "find_replacement_times",
-        {"appointment_type": "cleaning", "start_date": REPLACEMENT_DAY.isoformat()},
+        {"start_date": REPLACEMENT_DAY.isoformat()},
     )
     assert result["ok"] is True, result
     assert result["kind"] == "reschedule"
@@ -984,7 +985,7 @@ def test_replacement_search_without_a_target_says_so(db, world_session):
         session,
         requester,
         "find_replacement_times",
-        {"appointment_type": "cleaning", "start_date": REPLACEMENT_DAY.isoformat()},
+        {"start_date": REPLACEMENT_DAY.isoformat()},
     )
     assert result["ok"] is False
     assert result["error"] == "no_active_booking"

@@ -3,11 +3,11 @@ schema_version: 1
 locale: en-US
 branch: master
 nodes_managed: true
-exported_at: "2026-10-26T05:01:00Z"
+exported_at: "2026-10-27T12:14:37Z"
 modules:
     "":
-        dir_name: Dental Clinic AI Receptionist — Monorepo Orchestrator
-        title: Dental Clinic AI Receptionist — Monorepo Orchestrator
+        dir_name: Dental Clinic Scheduling Platform (Backend + Frontend)
+        title: Dental Clinic Scheduling Platform (Backend + Frontend)
         scope:
             - README.md
             - .gitignore
@@ -23,8 +23,8 @@ modules:
         depends_on: []
         related_to: []
     backend:
-        dir_name: Dental Clinic AI Receptionist Backend
-        title: Dental Clinic AI Receptionist Backend
+        dir_name: Dental Clinic Scheduling Backend
+        title: Dental Clinic Scheduling Backend
         scope:
             - backend/
         source_files: []
@@ -38,8 +38,8 @@ modules:
         depends_on: []
         related_to: []
     backend/agent_orchestration:
-        dir_name: Patient Conversation Agent & DeepSeek Orchestration
-        title: Patient Conversation Agent & DeepSeek Orchestration
+        dir_name: Patient Conversational Agent Orchestration
+        title: Patient Conversational Agent Orchestration
         scope:
             - backend/app/agent/
             - backend/app/ai/
@@ -47,24 +47,22 @@ modules:
         children: []
         depends_on: []
         related_to:
-            - path: backend/api_routes
+            - path: backend/business_services
     backend/api_routes:
-        dir_name: FastAPI HTTP Route Layer
-        title: FastAPI HTTP Route Layer
+        dir_name: FastAPI HTTP Routers (Patient Chat, Staff Dashboard, Scheduling, Clinic & Health
+        title: FastAPI HTTP Routers (Patient Chat, Staff Dashboard, Scheduling, Clinic & Health)
         scope:
             - backend/app/api/
         source_files: []
         children: []
         depends_on: []
         related_to:
-            - path: backend/agent_orchestration
             - path: backend/business_services
-            - path: frontend/patient_chat_flow
+            - path: backend/tests
             - path: frontend/shared_runtime
-            - path: frontend/staff_dashboard
     backend/bootstrap_cli:
-        dir_name: Application Bootstrap, CLI & Server Entrypoints
-        title: Application Bootstrap, CLI & Server Entrypoints
+        dir_name: FastAPI Application Bootstrap, CLI & SQLite Lifecycle
+        title: FastAPI Application Bootstrap, CLI & SQLite Lifecycle
         scope:
             - backend/app/main.py
             - backend/app/bootstrap.py
@@ -79,19 +77,20 @@ modules:
         depends_on: []
         related_to: []
     backend/business_services:
-        dir_name: Clinic Business Services Layer
-        title: Clinic Business Services Layer
+        dir_name: Business Services Layer
+        title: Business Services Layer
         scope:
             - backend/app/services/
         source_files: []
         children: []
         depends_on: []
         related_to:
+            - path: backend/agent_orchestration
             - path: backend/api_routes
             - path: backend/data_models
     backend/data_models:
-        dir_name: SQLAlchemy Domain Models & Schema Registry
-        title: SQLAlchemy Domain Models & Schema Registry
+        dir_name: Dental Clinic SQLAlchemy Data Models
+        title: Dental Clinic SQLAlchemy Data Models
         scope:
             - backend/app/models/
         source_files: []
@@ -107,10 +106,11 @@ modules:
         source_files: []
         children: []
         depends_on: []
-        related_to: []
+        related_to:
+            - path: backend/api_routes
     frontend:
-        dir_name: Frontend Demo App (Vite + React)
-        title: Frontend Demo App (Vite + React)
+        dir_name: Front-Desk Chat & Staff Dashboard (Vite_React)
+        title: Front-Desk Chat & Staff Dashboard (Vite/React)
         scope:
             - frontend/
         source_files: []
@@ -131,11 +131,10 @@ modules:
         source_files: []
         children: []
         depends_on: []
-        related_to:
-            - path: backend/api_routes
+        related_to: []
     frontend/reusable_components:
-        dir_name: Reusable UI Components & Shared Styles
-        title: Reusable UI Components & Shared Styles
+        dir_name: Shared UI Primitives, Card Views & Chat Components
+        title: Shared UI Primitives, Card Views & Chat Components
         scope:
             - frontend/src/components/
             - frontend/src/styles/
@@ -156,12 +155,11 @@ modules:
         related_to:
             - path: backend/api_routes
     frontend/staff_dashboard:
-        dir_name: Staff Dashboard (Clinic Reception UI)
-        title: Staff Dashboard (Clinic Reception UI)
+        dir_name: Staff Dashboard for Clinic Receptionists
+        title: Staff Dashboard for Clinic Receptionists
         scope:
             - frontend/src/pages/staff/
         source_files: []
         children: []
         depends_on: []
-        related_to:
-            - path: backend/api_routes
+        related_to: []

@@ -1,6 +1,6 @@
 """Family card implementation details stay out of patient-visible messages."""
 
-from app.agent import runner
+from app.agent import graph
 from app.models import Message, utcnow
 from app.schemas import ChatSendMessageRequest
 from app.services.conversations import public_message
@@ -16,15 +16,14 @@ def test_family_click_metadata_is_hidden_from_the_patient_message() -> None:
         ),
         action={"type": "family_option_click", "option_identity": OPTION_IDENTITY},
     )
-    provider_messages = [
-        {"role": "system", "content": "You are a dental receptionist."},
-        {"role": "user", "content": request.message},
-    ]
+    system_prompt = "You are a dental receptionist."
 
-    runner._add_family_option_action(provider_messages, request.action.option_identity)
+    prompt = graph._with_family_option_action(
+        system_prompt, request.action.option_identity, request.action.request_id
+    )
 
-    assert OPTION_IDENTITY in provider_messages[0]["content"]
-    assert OPTION_IDENTITY not in provider_messages[1]["content"]
+    assert OPTION_IDENTITY in prompt
+    assert OPTION_IDENTITY not in request.message
 
 
 def test_legacy_family_click_message_is_scrubbed_from_public_history() -> None:

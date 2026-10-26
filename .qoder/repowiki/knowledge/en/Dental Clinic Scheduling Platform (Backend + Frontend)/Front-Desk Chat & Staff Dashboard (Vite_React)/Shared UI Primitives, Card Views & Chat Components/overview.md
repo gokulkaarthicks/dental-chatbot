@@ -1,0 +1,1 @@
+Reusable React components (buttons, cards, status pills, app shell) and chat building blocks styled against a shared CSS custom-property design system.

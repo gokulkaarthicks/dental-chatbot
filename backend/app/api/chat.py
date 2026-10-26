@@ -20,9 +20,9 @@ from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
 from app.agent import runner
-from app.api.deps import CurrentPatientSession, DbSession
-from app.clinic import CLINIC
+from app.api.deps import CurrentClinic, CurrentPatientSession, DbSession
 from app.config import get_settings
+from app.db import require_clinic_id
 from app.models import (
     Conversation,
     ConversationFeedback,
@@ -69,7 +69,9 @@ def _summary(db: DbSession, conversation: Conversation) -> ChatConversationSumma
     )
 
 
-def _messages_payload(db: DbSession, conversation: Conversation) -> list[ChatMessageResponse]:
+def _messages_payload(
+    db: DbSession, clinic: CurrentClinic, conversation: Conversation
+) -> list[ChatMessageResponse]:
     # A restored thread must show what SQLite knows *now*: once this request is
     # held or booked, grids stored as clickable come back as context.
     return [
@@ -79,7 +81,7 @@ def _messages_payload(db: DbSession, conversation: Conversation) -> list[ChatMes
                 "cards": scheduling.reconcile_proposal_cards(
                     db,
                     scheduling.settle_superseded_grids(
-                        db, conversation.id, entry.get("cards")
+                        db, clinic, conversation.id, entry.get("cards")
                     ),
                 ),
             }
@@ -115,7 +117,9 @@ def _load_conversation(db: DbSession, record: PatientSession, public_id: str) ->
     summary="Start a patient chat session",
 )
 def start_session(
-    db: DbSession, payload: ChatStartSessionRequest | None = None
+    db: DbSession,
+    clinic: CurrentClinic,
+    payload: ChatStartSessionRequest | None = None,
 ) -> ChatSessionResponse:
     """Mint an opaque patient session and open (or resume) its conversation.
 
@@ -141,13 +145,13 @@ def start_session(
         )
 
     if conversation is not None:
-        greeting = runner.greeting_reply(db, record)
+        greeting = runner.greeting_reply(db, clinic, record)
         suggestions = runner.quick_suggestions(db, record)
     else:
         conversation = conversations.create_conversation(
             db, patient_session=record, generation=issued.reset_generation
         )
-        greeting = runner.greeting_reply(db, record)
+        greeting = runner.greeting_reply(db, clinic, record)
         conversations.append_assistant_message(db, conversation, content=greeting)
         suggestions = runner.quick_suggestions(db, record)
     db.commit()
@@ -159,7 +163,7 @@ def start_session(
         conversation_id=conversation.public_id,
         greeting=greeting,
         suggestions=suggestions,
-        clinic_name=CLINIC.name,
+        clinic_name=clinic.name,
     )
 
 
@@ -186,18 +190,20 @@ def list_conversations(
     status_code=status.HTTP_201_CREATED,
     summary="Start a new conversation in this session",
 )
-def start_conversation(db: DbSession, record: CurrentPatientSession) -> ChatConversationResponse:
+def start_conversation(
+    db: DbSession, record: CurrentPatientSession, clinic: CurrentClinic
+) -> ChatConversationResponse:
     generation = generations.ensure_generation(db)
     conversation = conversations.create_conversation(
         db, patient_session=record, generation=generation
     )
-    greeting = runner.greeting_reply(db, record)
+    greeting = runner.greeting_reply(db, clinic, record)
     conversations.append_assistant_message(db, conversation, content=greeting)
     db.commit()
     return ChatConversationResponse(
         conversation_id=conversation.public_id,
         conversation=_summary(db, conversation),
-        messages=_messages_payload(db, conversation),
+        messages=_messages_payload(db, clinic, conversation),
         suggestions=runner.quick_suggestions(db, record),
         session=_session_state(db, record),
         pending_proposals=[],
@@ -210,7 +216,10 @@ def start_conversation(db: DbSession, record: CurrentPatientSession) -> ChatConv
     summary="Restore one conversation",
 )
 def get_conversation(
-    conversation_id: str, db: DbSession, record: CurrentPatientSession
+    conversation_id: str,
+    db: DbSession,
+    record: CurrentPatientSession,
+    clinic: CurrentClinic,
 ) -> ChatConversationResponse:
     """Replay one stored thread.
 
@@ -223,7 +232,7 @@ def get_conversation(
     return ChatConversationResponse(
         conversation_id=conversation.public_id,
         conversation=_summary(db, conversation),
-        messages=_messages_payload(db, conversation),
+        messages=_messages_payload(db, clinic, conversation),
         suggestions=runner.quick_suggestions(db, record),
         session=_session_state(db, record),
         pending_proposals=_pending_cards(db, conversation),
@@ -240,6 +249,7 @@ async def send_message(
     payload: ChatSendMessageRequest,
     db: DbSession,
     record: CurrentPatientSession,
+    clinic: CurrentClinic,
 ) -> ChatSendMessageResponse:
     conversation = _load_conversation(db, record, conversation_id)
 
@@ -253,15 +263,25 @@ async def send_message(
     if not get_settings().deepseek_configured:
         logger.warning("Message received but DEEPSEEK_API_KEY is not configured")
 
-    result = await run_in_threadpool(
-        runner.run_turn,
-        db,
-        conversation=conversation,
-        patient_session=record,
-        patient_text=text,
-        family_option_identity=(payload.action.option_identity if payload.action else None),
-        family_option_request_id=(payload.action.request_id if payload.action else None),
-    )
+    try:
+        result = await run_in_threadpool(
+            runner.run_turn,
+            db,
+            clinic,
+            conversation=conversation,
+            patient_session=record,
+            patient_text=text,
+            family_option_identity=(payload.action.option_identity if payload.action else None),
+            family_option_request_id=(payload.action.request_id if payload.action else None),
+        )
+    except runner.TurnInProgress:
+        # A turn is already running for this thread (double tap, retried request).
+        # Answering with the transcript we already have would put two replies on
+        # one patient message, so say the turn is busy and let the client wait.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="I'm still working on your last message. One moment, please.",
+        ) from None
 
     db.refresh(conversation)
     return ChatSendMessageResponse(
@@ -307,7 +327,11 @@ def submit_feedback(
         select(ConversationFeedback).where(ConversationFeedback.message_id == message.id)
     )
     if row is None:
-        row = ConversationFeedback(conversation_id=conversation.id, message_id=message.id)
+        row = ConversationFeedback(
+            conversation_id=conversation.id,
+            message_id=message.id,
+            clinic_id=require_clinic_id(db),
+        )
         db.add(row)
     row.rating = payload.rating
     reason = (payload.reason or "").strip()

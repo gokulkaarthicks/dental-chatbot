@@ -22,6 +22,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.db import require_clinic_id
 from app.models import (
     Appointment,
     AppointmentStatus,
@@ -52,6 +53,7 @@ from app.services.proposals import (
     Outcome,
     confirm_proposal,
     create_proposal,
+    find_by_create_key,
     find_by_public_id,
     pending_for_conversation,
     proposal_intent,
@@ -60,6 +62,7 @@ from app.services.proposals import (
     supersede_pending,
 )
 from app.services.transactions import WriteTransactionError, write_transaction
+from app.tenancy import ClinicContext
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +71,13 @@ MAX_FAMILY_MEMBERS = 4
 
 @dataclass
 class Requester:
-    """Who is asking. Built by the tool layer from the session only."""
+    """Who is asking, and which clinic they are asking. Built by the tool layer
+    from the session only."""
 
     patient: Patient
     patient_session: PatientSession
     conversation: Conversation
+    clinic: ClinicContext
 
     @property
     def conversation_id(self) -> int:
@@ -224,9 +229,9 @@ def _first_name(patient: Patient) -> str:
 
 
 def _type_or_error(
-    session: Session, code: str | None, *, default: str | None = None
+    session: Session, clinic: ClinicContext, code: str | None, *, default: str | None = None
 ) -> tuple[AppointmentType | None, dict[str, Any] | None]:
-    appointment_type, error = resolve_appointment_type(session, code or default)
+    appointment_type, error = resolve_appointment_type(session, clinic, code or default)
     if appointment_type is None:
         return None, _fail(
             "unknown_appointment_type",
@@ -392,6 +397,7 @@ def family_option_cards(
 
 def find_availability(
     session: Session,
+    clinic: ClinicContext,
     *,
     patient: Patient,
     patient_id: int | None = None,
@@ -416,13 +422,14 @@ def find_availability(
     never satisfy a two-person request.
     """
     empty_type = AppointmentType(id=0, code="", name="", duration_minutes=30)
-    appointment_type, problem = _type_or_error(session, appointment_type_code, default="checkup")
+    appointment_type, problem = _type_or_error(session, clinic, appointment_type_code, default="checkup")
     if problem is not None or appointment_type is None:
         return AvailabilityAnswer(
             problem or _fail("unknown_type", "Unknown visit type."), [], empty_type
         )
 
     preferences = date_parsing.resolve_preferences(
+        clinic.config,
         start_date=start_date,
         date_phrases=date_phrases,
         time_windows=time_windows,
@@ -496,6 +503,7 @@ def find_availability(
     # (or hold) the same person twice.
     scope = booking_policy.booking_scope(
         session,
+        clinic,
         patients=targets,
         conversation_id=requester.conversation_id if requester is not None else None,
     )
@@ -549,6 +557,7 @@ def find_availability(
         )
         return _group_answer(
             session,
+            clinic,
             members=family_members,
             appointment_type=appointment_type,
             preferences=preferences,
@@ -584,6 +593,7 @@ def find_availability(
         )
         scope = booking_policy.booking_scope(
             session,
+            clinic,
             patients=targets,
             conversation_id=requester.conversation_id,
         )
@@ -624,6 +634,7 @@ def find_availability(
             # gone, and the grid below must not be marked settled by it.
             scope = booking_policy.booking_scope(
                 session,
+                clinic,
                 patients=targets,
                 conversation_id=requester.conversation_id,
             )
@@ -636,6 +647,7 @@ def find_availability(
 
     result = search_availability(
         session,
+        clinic,
         appointment_type=appointment_type,
         preferences=preferences,
         patients=targets,
@@ -718,6 +730,7 @@ def find_availability(
 
 def _group_answer(
     session: Session,
+    clinic: ClinicContext,
     *,
     members: list[FamilyMemberRequest],
     appointment_type: AppointmentType,
@@ -735,6 +748,7 @@ def _group_answer(
     appointment_types = {member.patient_id: member.appointment_type for member in members}
     plans = search_nearby_family_plans(
         session,
+        clinic,
         members=members,
         preferences=preferences,
         max_plans=6,
@@ -800,6 +814,7 @@ def _provider_names(session: Session) -> list[str]:
 
 def options_for_slots(
     session: Session,
+    clinic: ClinicContext,
     *,
     appointment_type: AppointmentType,
     slot_ids: list[str],
@@ -825,6 +840,7 @@ def options_for_slots(
         return []
 
     constraints = date_parsing.resolve_preferences(
+        clinic.config,
         start_date=start_date,
         date_phrases=date_phrases,
         time_windows=time_windows,
@@ -836,7 +852,7 @@ def options_for_slots(
     resolved: list[SlotOption] = []
     if not constraints.ambiguous:
         for slot_id in wanted:
-            option = _option_from_stable_id(session, appointment_type, slot_id)
+            option = _option_from_stable_id(session, clinic, appointment_type, slot_id)
             if option is None:
                 continue
             if not constraints.accepts_day(option.starts_at.date()):
@@ -852,7 +868,7 @@ def options_for_slots(
 
 
 def _option_from_stable_id(
-    session: Session, appointment_type: AppointmentType, stable_id: str
+    session: Session, clinic: ClinicContext, appointment_type: AppointmentType, stable_id: str
 ) -> SlotOption | None:
     """Decode ``slot_<provider>_<YYYYmmddHHMM>`` and verify it is bookable now."""
     parts = stable_id.split("_")
@@ -865,6 +881,7 @@ def _option_from_stable_id(
         return None
     rows = is_interval_bookable(
         session,
+        clinic,
         provider_id=provider_id,
         starts_at=starts_at,
         duration_minutes=appointment_type.duration_minutes,
@@ -893,6 +910,37 @@ def _option_from_stable_id(
 # --------------------------------------------------------------------------- #
 
 
+def replay_hold(
+    session: Session, *, requester: Requester, create_key: str | None
+) -> dict[str, Any] | None:
+    """The card this turn already holds under ``create_key``, if there is one.
+
+    ``create_proposal`` replays a same-key request on its own, but it is only
+    reached after the slots have been resolved again, and a slot held by the
+    *first* call of the turn no longer resolves as open. A retry inside one turn
+    was therefore refused as ``slot_unavailable`` before the key could speak.
+    Checking here keeps the promise the key makes: one request, one card.
+    """
+    if not create_key:
+        return None
+    proposal = find_by_create_key(
+        session,
+        requester.clinic,
+        conversation_id=requester.conversation_id,
+        create_key=create_key,
+    )
+    if proposal is None or proposal.status != ProposalStatus.PENDING.value:
+        return None
+    return _ok(
+        intent="new_booking",
+        proposal_id=proposal.public_id,
+        awaiting_confirmation=True,
+        replayed=True,
+        message="That proposal is already waiting for your confirmation.",
+        cards=[proposal_card(proposal, include_actions=True)],
+    )
+
+
 def propose_booking(
     session: Session,
     *,
@@ -919,6 +967,13 @@ def propose_booking(
     if not options:
         return _fail("no_slots", "Which time would you like me to hold?")
 
+    # A retry inside one turn replays the hold it already made. This is checked
+    # before anything re-derives availability: the slots are held by *this*
+    # conversation, so a fresh availability read would call them taken.
+    replay = replay_hold(session, requester=requester, create_key=create_key)
+    if replay is not None:
+        return replay
+
     # A fresh slot list is only for a fresh request. With a card already
     # waiting, another hold would give the same request two bookings; the guard
     # below refuses it, and this makes the refusal the same whether the slot
@@ -935,7 +990,7 @@ def propose_booking(
             session.scalars(select(Patient).where(Patient.id.in_(sorted(option_patients))))
         ) or [requester.patient]
     scope = booking_policy.booking_scope(
-        session, patients=scope_patients, conversation_id=requester.conversation_id
+        session, requester.clinic, patients=scope_patients, conversation_id=requester.conversation_id
     )
     refusal = booking_policy.refusal_for_hold(
         session,
@@ -1026,7 +1081,10 @@ def _pending_hold_answer(
     after a refresh or a restart.
     """
     scope = booking_policy.booking_scope(
-        session, patients=[requester.patient], conversation_id=requester.conversation_id
+        session,
+        requester.clinic,
+        patients=[requester.patient],
+        conversation_id=requester.conversation_id,
     )
     pending = next(
         (
@@ -1073,12 +1131,14 @@ def _declined_after_latest_search(session: Session, *, requester: Requester) -> 
     searched_at = session.scalar(
         select(func.max(Message.created_at)).where(
             Message.conversation_id == requester.conversation_id,
+            Message.clinic_id == require_clinic_id(session),
             Message.cards.is_not(None),
         )
     )
     declined_at = session.scalar(
         select(func.max(AuditRecord.occurred_at)).where(
             AuditRecord.conversation_id == requester.conversation_id,
+            AuditRecord.clinic_id == require_clinic_id(session),
             AuditRecord.action == "proposal.rejected",
         )
     )
@@ -1100,7 +1160,10 @@ def session_has_booking_for(
     would let one request book twice.
     """
     scope = booking_policy.booking_scope(
-        session, patients=[requester.patient], conversation_id=requester.conversation_id
+        session,
+        requester.clinic,
+        patients=[requester.patient],
+        conversation_id=requester.conversation_id,
     )
     if scope.pending_booking is not None or scope.has_booked_visit:
         return True
@@ -1402,6 +1465,7 @@ def replacement_for_slot(
     try:
         view = appointments.resolve_reschedule_target(
             session,
+            requester.clinic,
             patient_id=requester.patient.id,
             appointment_id=target_id,
             which=which,
@@ -1421,7 +1485,7 @@ def replacement_for_slot(
     type_code = appointment_type_code or (
         view.appointment_type.code if view.appointment_type else None
     )
-    appointment_type, problem = _type_or_error(session, type_code)
+    appointment_type, problem = _type_or_error(session, requester.clinic, type_code)
     if problem is not None or appointment_type is None:
         return _fail(
             "unknown_appointment_type",
@@ -1434,6 +1498,7 @@ def replacement_for_slot(
 
     options = options_for_slots(
         session,
+        requester.clinic,
         appointment_type=appointment_type,
         slot_ids=[slot_id],
         patient_id=requester.patient.id,
@@ -1589,7 +1654,7 @@ def find_replacement_availability(
         )
     try:
         view = appointments.resolve_reschedule_target(
-            session, patient_id=requester.patient.id, appointment_id=target_id
+            session, requester.clinic, patient_id=requester.patient.id, appointment_id=target_id
         )
     except appointments.RescheduleTargetError as exc:
         return _fail(
@@ -1612,6 +1677,7 @@ def find_replacement_availability(
 
     answer = find_availability(
         session,
+        requester.clinic,
         patient=requester.patient,
         appointment_type_code=appointment_type.code,
         date_phrases=date_phrases,
@@ -1894,7 +1960,9 @@ def confirm(
         # itself as one booking here and two elsewhere.
         payload["active_appointments"] = [
             view.as_dict()
-            for view in appointments.active_for_patient(session, requester.patient.id)
+            for view in appointments.active_for_patient(
+                session, requester.clinic, requester.patient.id
+            )
         ]
         payload["active_appointment_count"] = len(payload["active_appointments"])
     return payload
@@ -2176,7 +2244,7 @@ def with_live_proposals(
 
 
 def settles_plain_grids(
-    session: Session, conversation_id: int
+    session: Session, clinic: ClinicContext, conversation_id: int
 ) -> tuple[bool, str | None]:
     """Whether every ordinary grid in this conversation is now context.
 
@@ -2205,7 +2273,7 @@ def settles_plain_grids(
         else []
     )
     scope = booking_policy.booking_scope(
-        session, patients=patients, conversation_id=conversation_id
+        session, clinic, patients=patients, conversation_id=conversation_id
     )
     if scope.has_booked_visit:
         return True, "booked"
@@ -2215,7 +2283,7 @@ def settles_plain_grids(
 
 
 def settle_superseded_grids(
-    session: Session, conversation_id: int, cards: list[dict[str, Any]] | None
+    session: Session, clinic: ClinicContext, conversation_id: int, cards: list[dict[str, Any]] | None
 ) -> list[dict[str, Any]]:
     """Mark stored slot cards as context once this request is held or booked.
 
@@ -2228,7 +2296,7 @@ def settle_superseded_grids(
     output = [
         dict(card) if isinstance(card, dict) else card for card in (cards or [])
     ]
-    settled, reason = settles_plain_grids(session, conversation_id)
+    settled, reason = settles_plain_grids(session, clinic, conversation_id)
     if not settled:
         return output
     for card in output:
@@ -2428,6 +2496,7 @@ def family_search(
         ]
 
     preferences = date_parsing.resolve_preferences(
+        requester.clinic.config,
         start_date=start_date,
         date_phrases=date_phrases,
         time_windows=time_windows,
@@ -2462,6 +2531,7 @@ def family_search(
     plan_search = search_back_to_back_plans if back_to_back else search_nearby_family_plans
     plans = plan_search(
         session,
+        requester.clinic,
         members=requests,
         preferences=preferences,
         max_plans=6,
@@ -2566,6 +2636,7 @@ def refresh_scheduling_request(
     if alternative_day:
         anchor_preferences = (alternative_day_anchor or request).get("preferences") or {}
         prior = date_parsing.resolve_preferences(
+            requester.clinic.config,
             date_phrases=anchor_preferences.get("date_phrases") or [],
             start_date=anchor_preferences.get("start_date"),
             range_days=anchor_preferences.get("range_days"),
@@ -2605,6 +2676,7 @@ def refresh_scheduling_request(
     participant = participants[0]
     return find_availability(
         session,
+        requester.clinic,
         patient=requester.patient,
         patient_id=participant.get("patient_id"),
         appointment_type_code=participant.get("appointment_type_code"),
@@ -2666,7 +2738,9 @@ def _family_requests(
                     patient_first_name=_first_name(member.patient),
                 ),
             )
-        appointment_type, type_problem = _type_or_error(session, member.appointment_type_code)
+        appointment_type, type_problem = _type_or_error(
+            session, requester.clinic, member.appointment_type_code
+        )
         if appointment_type is None or type_problem is not None:
             return None, None, type_problem or _fail("unknown_type", "Unknown visit type.")
         if member.patient.id in types:
@@ -2752,7 +2826,10 @@ def hold_family_option(
         return problem or _fail("invalid_family", "I couldn't put that family together.")
 
     scope = booking_policy.booking_scope(
-        session, patients=[member.patient for member in members], conversation_id=requester.conversation_id
+        session,
+        requester.clinic,
+        patients=[member.patient for member in members],
+        conversation_id=requester.conversation_id,
     )
     if scope.has_booked_visit:
         return _fail(
@@ -2766,6 +2843,7 @@ def hold_family_option(
         )
 
     preferences = date_parsing.resolve_preferences(
+        requester.clinic.config,
         start_date=start_date,
         date_phrases=date_phrases,
         time_windows=time_windows,
@@ -2823,6 +2901,7 @@ def hold_family_option(
 
     resolved = _family_plan_for_card(
         session,
+        requester.clinic,
         requests=requests,
         types=types,
         preferences=preferences,
@@ -2838,6 +2917,7 @@ def hold_family_option(
         plan_search = search_back_to_back_plans if back_to_back else search_nearby_family_plans
         fresh_plans = plan_search(
             session,
+            requester.clinic,
             members=requests,
             preferences=preferences,
             max_plans=6,
@@ -2895,6 +2975,7 @@ def hold_family_option(
     ]
     scope = booking_policy.booking_scope(
         session,
+        requester.clinic,
         patients=[member.patient for member in members],
         conversation_id=requester.conversation_id,
     )
@@ -2975,6 +3056,7 @@ def hold_family_option(
 
 def _family_plan_for_card(
     session: Session,
+    clinic: ClinicContext,
     *,
     requests: list[FamilyMemberRequest],
     types: dict[int, AppointmentType],
@@ -2996,7 +3078,7 @@ def _family_plan_for_card(
             None,
         )
         if plan is None:
-            plan = _decode_family_identity(session, option_identity, types)
+            plan = _decode_family_identity(session, clinic, option_identity, types)
     if plan is None and options_card_fallback(plans, option_index, start_index):
         plan = plans[start_index + option_index]
     if plan is None:
@@ -3005,6 +3087,7 @@ def _family_plan_for_card(
         plan_search = search_back_to_back_plans if back_to_back else search_nearby_family_plans
         recomputed = plan_search(
             session,
+            clinic,
             members=requests,
             preferences=preferences,
             max_plans=6,
@@ -3032,6 +3115,7 @@ def _family_plan_for_card(
             return None
         rows = is_interval_bookable(
             session,
+            clinic,
             provider_id=option.provider_id,
             starts_at=option.starts_at,
             duration_minutes=appointment_type.duration_minutes,
@@ -3090,7 +3174,7 @@ def family_plan_identity(plan: list[SlotOption]) -> str:
 
 
 def _decode_family_identity(
-    session: Session, identity: str, types: dict[int, AppointmentType]
+    session: Session, clinic: ClinicContext, identity: str, types: dict[int, AppointmentType]
 ) -> list[SlotOption] | None:
     """Rebuild an option from the clicked card's own slot ids.
 
@@ -3112,7 +3196,7 @@ def _decode_family_identity(
         appointment_type = types.get(patient_key)
         if appointment_type is None:
             return None
-        option = _option_from_stable_id(session, appointment_type, stable_id)
+        option = _option_from_stable_id(session, clinic, appointment_type, stable_id)
         if option is None:
             return None
         option.patient_id = patient_key

@@ -1,1 +1,0 @@
-SQLAlchemy declarative models and shared enums/mixins for the dental clinic domain, with a central registry that bootstraps all tables via Base.metadata.create_all.

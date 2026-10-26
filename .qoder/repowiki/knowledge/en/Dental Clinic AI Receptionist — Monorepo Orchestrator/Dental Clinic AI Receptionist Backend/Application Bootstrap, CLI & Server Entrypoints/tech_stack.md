@@ -1,1 +1,0 @@
-FastAPI + Starlette ASGI middleware, SQLAlchemy ORM with SQLite (NullPool, WAL journal mode), Uvicorn server, argparse-based CLI, and a custom minimal dotenv parser (no python-dotenv dependency).

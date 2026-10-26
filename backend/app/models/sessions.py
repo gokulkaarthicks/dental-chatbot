@@ -22,17 +22,25 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Index, String
+from sqlalchemy import ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UTCDateTime
+from app.models.base import Base, ClinicScoped, TimestampMixin, UTCDateTime
 
 if TYPE_CHECKING:
     from app.models.conversations import Conversation
     from app.models.patients import Patient
 
 
-class PatientSession(Base, TimestampMixin):
+class PatientSession(Base, ClinicScoped, TimestampMixin):
+    """The browser credential for one clinic's chat.
+
+    ``clinic_id`` is the tenant pin. Once a session exists it *is* the tenant
+    authority: a later request that names a different clinic in ``X-Clinic`` is
+    rejected rather than allowed to read the other clinic's conversation, which is
+    why the token (not the header) decides the tenant for the rest of a thread.
+    """
+
     __tablename__ = "patient_sessions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -47,6 +55,13 @@ class PatientSession(Base, TimestampMixin):
     )
     verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     verification_method: Mapped[str | None] = mapped_column(String(24))
+
+    # Throttle for identity lookups tried *through the chat*. A phone plus a date
+    # of birth is a two-factor guess, and an unlimited oracle over it is how a
+    # clinic's charts get enumerated. Counted per session, not per patient, so a
+    # new browser tab does not reset someone else's lockout.
+    verification_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verification_locked_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     # Contact details for an UNVERIFIED caller, captured only when an emergency
     # report has to be filed before identity is confirmed. Kept apart from
@@ -68,6 +83,7 @@ class PatientSession(Base, TimestampMixin):
         Index("ix_patient_sessions_generation", "reset_generation"),
         Index("ix_patient_sessions_expires", "expires_at"),
         Index("ix_patient_sessions_verified_patient", "verified_patient_id"),
+        Index("ix_patient_sessions_clinic_verified", "clinic_id", "verified_patient_id"),
     )
 
     @property

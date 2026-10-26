@@ -1,9 +1,13 @@
 """Application settings.
 
-The project intentionally supports **exactly three** environment variables
-(see ``.env`` / ``.env.example``) and all of them are DeepSeek model settings.
+The project intentionally supports **exactly three** application settings (see
+``.env`` / ``.env.example``) and all of them are DeepSeek model settings.
 Everything else -- database location, bootstrap behaviour, CORS -- has safe
 defaults in code so no extra configuration can drift between environments.
+
+The one other variable the process reads is ``PORT``, and it is not a setting:
+``server.py`` uses it to pick the port Uvicorn binds, which is a container
+concern rather than application configuration.
 
 The DeepSeek API key is read only inside this process. It must never be sent to
 the browser, written to logs, or committed to git.

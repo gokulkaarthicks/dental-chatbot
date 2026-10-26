@@ -1,28 +1,15 @@
-"""Single conversational agent: DeepSeek + tool calling.
+"""The DeepSeek chat model, seen by the rest of the app as a LangChain model."""
 
-One model, one agent, no router. FastAPI owns every state change: the model may
-only ask for tools, and each tool validates its own arguments with Pydantic
-before touching a service.
-"""
-
-from app.ai.deepseek import (
-    AssistantTurn,
-    DeepSeekBadResponse,
-    DeepSeekClient,
-    DeepSeekError,
-    DeepSeekNotConfigured,
-    DeepSeekTimeout,
-    DeepSeekUnavailable,
-    ToolCall,
+from app.ai.llm import (
+    AgentProviderError,
+    ProviderNotConfigured,
+    build_chat_model,
+    provider_user_message,
 )
 
 __all__ = [
-    "AssistantTurn",
-    "DeepSeekBadResponse",
-    "DeepSeekClient",
-    "DeepSeekError",
-    "DeepSeekNotConfigured",
-    "DeepSeekTimeout",
-    "DeepSeekUnavailable",
-    "ToolCall",
+    "AgentProviderError",
+    "ProviderNotConfigured",
+    "build_chat_model",
+    "provider_user_message",
 ]

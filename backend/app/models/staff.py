@@ -5,12 +5,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import (
     AlertStatus,
     Base,
+    ClinicScoped,
     RequestStatus,
     RequestType,
     StaffRole,
@@ -22,16 +31,21 @@ if TYPE_CHECKING:
     from app.models.conversations import Conversation
 
 
-class StaffUser(Base, TimestampMixin):
-    """A clinic employee who can review proposals and pick up requests."""
+class StaffUser(Base, ClinicScoped, TimestampMixin):
+    """A clinic employee who can review proposals and pick up requests.
+
+    ``email`` and ``username`` are unique *within* a clinic, not globally: the
+    same person may legitimately hold a login at two practices, and a staff login
+    at clinic B must never resolve a user record belonging to clinic A.
+    """
 
     __tablename__ = "staff_users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    seed_key: Mapped[str | None] = mapped_column(String(64), unique=True)
-    email: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    seed_key: Mapped[str | None] = mapped_column(String(64))
+    email: Mapped[str] = mapped_column(String(160), nullable=False)
     # Phase 4: the dashboard login identifier. Email stays for contact purposes.
-    username: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(64), index=True)
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     role: Mapped[str] = mapped_column(
         String(24), nullable=False, default=StaffRole.RECEPTIONIST.value
@@ -52,10 +66,20 @@ class StaffUser(Base, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("role IN ('receptionist', 'clinic_manager')", name="ck_staff_role"),
+        UniqueConstraint("clinic_id", "seed_key", name="uq_staff_users_clinic_seed_key"),
+        UniqueConstraint("clinic_id", "email", name="uq_staff_users_clinic_email"),
+        # Per-clinic login namespace: the same username may exist at two practices.
+        Index(
+            "uq_staff_username",
+            "clinic_id",
+            "username",
+            unique=True,
+            sqlite_where=text("username IS NOT NULL"),
+        ),
     )
 
 
-class StaffSession(Base):
+class StaffSession(Base, ClinicScoped):
     """Server-side session token. Invalidated in bulk on demo reset."""
 
     __tablename__ = "staff_sessions"
@@ -81,10 +105,11 @@ class StaffSession(Base):
     __table_args__ = (
         Index("ix_staff_sessions_user", "staff_user_id"),
         Index("ix_staff_sessions_expires", "expires_at"),
+        Index("ix_staff_sessions_clinic_token", "clinic_id", "token_hash"),
     )
 
 
-class StaffAlert(Base, TimestampMixin):
+class StaffAlert(Base, ClinicScoped, TimestampMixin):
     """Escalations raised by the assistant (emergencies, low-confidence matches)."""
 
     __tablename__ = "staff_alerts"
@@ -133,10 +158,12 @@ class StaffAlert(Base, TimestampMixin):
         Index("ix_staff_alerts_status_created", "status", "created_at"),
         Index("ix_staff_alerts_conversation", "conversation_id"),
         Index("ix_staff_alerts_dedupe", "dedupe_key"),
+        Index("ix_staff_alerts_clinic_status", "clinic_id", "status", "created_at"),
+        Index("ix_staff_alerts_clinic_dedupe", "clinic_id", "dedupe_key"),
     )
 
 
-class PendingRequest(Base, TimestampMixin):
+class PendingRequest(Base, ClinicScoped, TimestampMixin):
     """Callbacks and other items the assistant could not resolve itself."""
 
     __tablename__ = "pending_requests"
@@ -182,4 +209,6 @@ class PendingRequest(Base, TimestampMixin):
         ),
         Index("ix_pending_requests_status_created", "status", "created_at"),
         Index("ix_pending_requests_dedupe", "dedupe_key"),
+        Index("ix_pending_requests_clinic_status", "clinic_id", "status", "created_at"),
+        Index("ix_pending_requests_clinic_dedupe", "clinic_id", "dedupe_key"),
     )

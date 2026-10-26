@@ -39,16 +39,21 @@ def active_holds_for(session, public_id: str) -> int:
     )
 
 
-def open_session():
-    """A second connection, as another request would use."""
+def open_session(clinic_id: int):
+    """A second connection, as another request would use.
+
+    Bound to the scenario's tenant: an unbound session cannot read or write
+    tenant-owned rows, and releasing a lapsed hold is a tenant-scoped write.
+    """
     from app import db as db_module
 
-    return db_module.new_session()
+    return db_module.bind_tenant(db_module.new_session(), clinic_id)
 
 
 def _search(session, requester: Requester, phrases: list[str]):
     return scheduling.find_availability(
         session,
+        requester.clinic,
         patient=requester.patient,
         appointment_type_code="cleaning",
         date_phrases=phrases,
@@ -97,12 +102,12 @@ def test_a_lapsed_hold_still_lets_the_patient_confirm_the_time(scenario) -> None
     held = _hold(session, requester, first)
     session.commit()
 
-    with open_session() as other:
+    with open_session(requester.clinic.clinic_id) as other:
         row = find_by_public_id(other, held["proposal_id"])
         row.expires_at = utcnow() - timedelta(seconds=1)
         other.commit()
 
-    with open_session() as reading:
+    with open_session(requester.clinic.clinic_id) as reading:
         assert release_expired_holds(reading, requester.conversation.id) == [
             held["proposal_id"]
         ]

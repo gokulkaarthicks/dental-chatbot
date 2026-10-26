@@ -12,17 +12,17 @@ from typing import TYPE_CHECKING
 from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, ClinicScoped, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.patients import Patient
 
 
-class FamilyGroup(Base, TimestampMixin):
+class FamilyGroup(Base, ClinicScoped, TimestampMixin):
     __tablename__ = "family_groups"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    seed_key: Mapped[str | None] = mapped_column(String(64), unique=True)
+    seed_key: Mapped[str | None] = mapped_column(String(64))
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     shared_phone: Mapped[str | None] = mapped_column(String(32))
     notes: Mapped[str | None] = mapped_column(Text)
@@ -31,10 +31,14 @@ class FamilyGroup(Base, TimestampMixin):
         back_populates="family_group", cascade="all, delete-orphan"
     )
 
-    __table_args__ = (Index("ix_family_groups_shared_phone", "shared_phone"),)
+    __table_args__ = (
+        UniqueConstraint("clinic_id", "seed_key", name="uq_family_groups_clinic_seed_key"),
+        Index("ix_family_groups_shared_phone", "shared_phone"),
+        Index("ix_family_groups_clinic_shared_phone", "clinic_id", "shared_phone"),
+    )
 
 
-class FamilyMember(Base):
+class FamilyMember(Base, ClinicScoped):
     __tablename__ = "family_members"
 
     id: Mapped[int] = mapped_column(primary_key=True)

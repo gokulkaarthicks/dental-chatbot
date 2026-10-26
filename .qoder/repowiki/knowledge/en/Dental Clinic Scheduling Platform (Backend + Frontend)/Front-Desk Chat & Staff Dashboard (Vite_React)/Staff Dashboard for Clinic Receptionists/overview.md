@@ -1,0 +1,1 @@
+Single-page React dashboard that lets clinic receptionists manage appointments, patients, requests, alerts and feedback against the shared SQLite-backed API.

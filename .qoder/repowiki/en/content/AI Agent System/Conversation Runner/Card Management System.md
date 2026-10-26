@@ -12,9 +12,17 @@
 - [runner.py](file://backend/app/agent/runner.py)
 - [reply_format.py](file://backend/app/agent/reply_format.py)
 - [scheduling.py](file://backend/app/services/scheduling.py)
+- [tools.py](file://backend/app/agent/tools.py)
 - [proposals.py](file://backend/app/models/proposals.py)
 - [test_settled_grids.py](file://backend/tests/test_settled_grids.py)
 </cite>
+
+## Update Summary
+**Changes Made**   
+- Updated card deduplication logic to improve identity resolution and prevent duplicate rendering
+- Enhanced merge strategy to better separate informational cards from availability grids
+- Improved truncation mechanism to preserve interactive elements while reducing payload size
+- Refined prose formatting to maintain consistency with card state
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -54,6 +62,7 @@ AP["chat.py<br/>Chat endpoints"]
 RU["runner.py<br/>Turn runner"]
 RF["reply_format.py<br/>Prose formatting"]
 SC["scheduling.py<br/>Availability, proposals, settlement"]
+TL["tools.py<br/>Tool execution & truncation"]
 PR["proposals.py<br/>Proposal models"]
 end
 FC --> CS
@@ -66,6 +75,7 @@ UA --> PV
 AP --> RU
 RU --> SC
 RU --> RF
+RU --> TL
 SC --> PR
 ```
 
@@ -80,6 +90,7 @@ SC --> PR
 - [runner.py:171-406](file://backend/app/agent/runner.py#L171-L406)
 - [reply_format.py:295-428](file://backend/app/agent/reply_format.py#L295-L428)
 - [scheduling.py:238-295](file://backend/app/services/scheduling.py#L238-L295)
+- [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740)
 - [proposals.py:35-141](file://backend/app/models/proposals.py#L35-L141)
 
 **Section sources**
@@ -93,6 +104,7 @@ SC --> PR
 - [runner.py:171-406](file://backend/app/agent/runner.py#L171-L406)
 - [reply_format.py:295-428](file://backend/app/agent/reply_format.py#L295-L428)
 - [scheduling.py:238-295](file://backend/app/services/scheduling.py#L238-L295)
+- [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740)
 - [proposals.py:35-141](file://backend/app/models/proposals.py#L35-L141)
 
 ## Core Components
@@ -109,6 +121,7 @@ The card system is built around typed payloads, rendering logic, action handling
 | Chat endpoint | Run one patient message through the agent and return messages plus cards | [chat.py:233-274](file://backend/app/api/chat.py#L233-L274) |
 | Runner | Execute tools, merge cards, deduplicate, attach to the correct turn, format prose | [runner.py:171-406](file://backend/app/agent/runner.py#L171-L406) |
 | Prose formatter | Remove time echoes, replace questions, write card-derived intros | [reply_format.py:295-428](file://backend/app/agent/reply_format.py#L295-L428) |
+| Tool executor | Execute tools with enhanced truncation preserving interactive elements | [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740) |
 | Scheduling service | Build slot cards, family options, proposals, and settled-grid projections | [scheduling.py:238-295](file://backend/app/services/scheduling.py#L238-L295), [scheduling.py:2180-2259](file://backend/app/services/scheduling.py#L2180-L2259) |
 | Proposal model | Persist multi-appointment suggestions and their lifecycle | [proposals.py:35-141](file://backend/app/models/proposals.py#L35-L141) |
 
@@ -122,6 +135,7 @@ The card system is built around typed payloads, rendering logic, action handling
 - [chat.py:233-274](file://backend/app/api/chat.py#L233-L274)
 - [runner.py:171-406](file://backend/app/agent/runner.py#L171-L406)
 - [reply_format.py:295-428](file://backend/app/agent/reply_format.py#L295-L428)
+- [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740)
 - [scheduling.py:238-295](file://backend/app/services/scheduling.py#L238-L295)
 - [proposals.py:35-141](file://backend/app/models/proposals.py#L35-L141)
 
@@ -134,14 +148,17 @@ participant Client as "Frontend"
 participant API as "chat.py"
 participant Runner as "runner.py"
 participant Service as "scheduling.py"
+participant Tools as "tools.py"
 participant DB as "SQLite"
 Client->>API : "Send patient message"
 API->>Runner : "run_turn(session, conversation, patient_text)"
 Runner->>Runner : "Tool loop and tool execution"
-Runner->>Service : "Build availability / proposals / family options"
+Runner->>Tools : "Execute tool calls"
+Tools->>Service : "Build availability / proposals / family options"
 Service->>DB : "Read schedule, holds, proposals, appointments"
 DB-->>Service : "Real rows"
-Service-->>Runner : "Cards and result payload"
+Service-->>Tools : "Cards and result payload"
+Tools-->>Runner : "Truncated results with preserved cards"
 Runner->>Runner : "Merge rounds, deduplicate, settle grids"
 Runner->>Runner : "Format prose and attach cards"
 Runner-->>API : "Reply, visible messages, cards"
@@ -151,6 +168,7 @@ API-->>Client : "Messages with projected cards"
 **Diagram sources**
 - [chat.py:233-274](file://backend/app/api/chat.py#L233-L274)
 - [runner.py:171-406](file://backend/app/agent/runner.py#L171-L406)
+- [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740)
 - [scheduling.py:238-295](file://backend/app/services/scheduling.py#L238-L295)
 
 ## Detailed Component Analysis
@@ -175,8 +193,8 @@ The frontend type layer mirrors these backend payloads so the UI can distinguish
 - [cards.ts:9-187](file://frontend/src/lib/cards.ts#L9-L187)
 - [proposals.py:35-141](file://backend/app/models/proposals.py#L35-L141)
 
-### Card Identity and Deduplication
-Card identity prevents the same option from being rendered twice after retries, re-derived proposals, or merged rounds.
+### Enhanced Card Identity and Deduplication
+Card identity prevents the same option from being rendered twice after retries, re-derived proposals, or merged rounds. The improved deduplication logic provides more robust identity resolution.
 
 Identity rules:
 
@@ -185,7 +203,7 @@ Identity rules:
 - Family options use `option_id`.
 - Other informational cards fall back to their type.
 
-Deduplication scans cards in order and keeps only the first occurrence of each identity.
+Deduplication scans cards in order and keeps only the first occurrence of each identity, with enhanced error handling for malformed cards.
 
 ```mermaid
 flowchart TD
@@ -199,18 +217,21 @@ Keep --> Next
 Next --> Done(["Output unique cards"])
 ```
 
+**Updated** Enhanced identity computation with better error handling and more robust deduplication logic
+
 **Diagram sources**
 - [runner.py:597-648](file://backend/app/agent/runner.py#L597-L648)
 
 **Section sources**
 - [runner.py:597-648](file://backend/app/agent/runner.py#L597-L648)
 
-### Merge Strategy Across Rounds
-During a single turn, the model may call multiple tools. The runner collects cards from each round and merges them carefully:
+### Improved Merge Strategy Across Rounds
+During a single turn, the model may call multiple tools. The runner collects cards from each round and merges them carefully with enhanced logic to better separate informational cards from availability grids:
 
 - If a fresh round contains offer cards (`slot` or `family_option`), those supersede earlier offer grids.
 - Informational cards from earlier rounds (confirmations, handoffs, appointment summaries) are preserved.
 - The merged list is then deduplicated by card identity.
+- Enhanced separation ensures that informational cards are not lost when new availability grids are presented.
 
 This avoids showing two competing slot grids while keeping important results like confirmations visible alongside the latest search.
 
@@ -219,11 +240,14 @@ flowchart TD
 Existing["Existing cards"] --> CheckFresh["Does fresh round have offer cards?"]
 CheckFresh --> |Yes| ReplaceOffers["Replace older offers with fresh offers"]
 CheckFresh --> |No| AppendFresh["Append fresh informational cards"]
-ReplaceOffers --> Merge["Merge existing informational + fresh offers"]
-AppendFresh --> Merge
+ReplaceOffers --> PreserveInfo["Preserve existing informational cards"]
+AppendFresh --> Merge["Merge existing informational + fresh offers"]
+PreserveInfo --> Merge
 Merge --> Dedupe["Deduplicate by identity"]
 Dedupe --> Output["Merged cards"]
 ```
+
+**Updated** Enhanced merge logic with better separation between informational cards and availability grids
 
 **Diagram sources**
 - [runner.py:609-637](file://backend/app/agent/runner.py#L609-L637)
@@ -232,7 +256,7 @@ Dedupe --> Output["Merged cards"]
 - [runner.py:609-637](file://backend/app/agent/runner.py#L609-L637)
 
 ### Settlement Process and Settled Grid Detection
-A “settled” grid means the request behind it is no longer an open offer. This happens when:
+A "settled" grid means the request behind it is no longer an open offer. This happens when:
 
 - The request has a booked visit.
 - The request has a pending hold.
@@ -298,14 +322,31 @@ CreateCardOnly --> End
 - [runner.py:199-206](file://backend/app/agent/runner.py#L199-L206)
 - [runner.py:693-718](file://backend/app/agent/runner.py#L693-L718)
 
+### Enhanced Truncation Preserving Interactive Elements
+Tool results undergo enhanced truncation to preserve interactive elements while reducing payload size. The improved `_truncate` function in tools.py ensures that:
+
+- Interactive cards are never discarded during truncation
+- Decision-critical fields are preserved
+- Secondary details (long appointment lists, provider catalogues, notes) are trimmed first
+- A last-resort marker indicates when truncation occurred
+- Maximum 12 cards are kept per result to maintain usability
+
+This prevents the assistant from saying "here are the times" above nothing when large payloads need to be reduced.
+
+**Updated** Enhanced truncation logic that prioritizes preserving interactive card elements over other data
+
+**Section sources**
+- [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740)
+
 ### Prose Formatting and Settled Intro Replacement
-The prose formatter enforces a “cards, not prose” rule:
+The prose formatter enforces a "cards, not prose" rule with enhanced truncation handling:
 
 - Time-list echoes are removed.
-- Questions about “which works for you?” are replaced by a card-derived question.
+- Questions about "which works for you?" are replaced by a card-derived question.
 - An intro that names a day or provider not present in the grid is replaced.
 - When any slot card is settled, the prose is replaced with a settled introduction.
 - Refreshed availability uses wording that acknowledges the refresh.
+- Long intros are truncated to sentence boundaries while preserving meaning.
 
 This prevents the model from contradicting the card state, such as asking the patient to pick a time when the server says the grid is already settled.
 
@@ -369,24 +410,27 @@ A typical slot lifecycle is:
 
 1. Backend availability search produces real `SlotOption` objects.
 2. `slot_card` converts each option into a slot card with stable identifiers and metadata.
-3. The runner merges the new round’s cards with earlier informational cards.
-4. The runner deduplicates by identity.
-5. Superseded grids are settled if the request is already held or booked.
-6. Cards are attached to the current turn’s assistant message.
-7. The frontend groups slot cards into a grid and lets the user select one.
-8. Selecting a slot posts its `slot_id` and intent back to the server.
-9. The server creates or updates a proposal and returns confirmation or error cards.
-10. The frontend synchronizes pending proposals and availability, disabling stale or rejected slots.
+3. Tool results undergo enhanced truncation preserving interactive elements.
+4. The runner merges the new round's cards with earlier informational cards.
+5. The runner deduplicates by identity with improved logic.
+6. Superseded grids are settled if the request is already held or booked.
+7. Cards are attached to the current turn's assistant message.
+8. The frontend groups slot cards into a grid and lets the user select one.
+9. Selecting a slot posts its `slot_id` and intent back to the server.
+10. The server creates or updates a proposal and returns confirmation or error cards.
+11. The frontend synchronizes pending proposals and availability, disabling stale or rejected slots.
 
 ```mermaid
 sequenceDiagram
 participant Search as "scheduling.find_availability"
+participant Tools as "tools._truncate"
 participant Runner as "runner._merge_round_cards"
 participant Settle as "scheduling.settle_superseded_grids"
 participant Attach as "runner._attach_cards"
 participant UI as "SlotCardView"
 participant Actions as "useCardActions.selectSlot"
-Search-->>Runner : "Slot cards"
+Search-->>Tools : "Slot cards"
+Tools-->>Runner : "Truncated cards with preserved elements"
 Runner-->>Settle : "Merged cards"
 Settle-->>Attach : "Settled or active cards"
 Attach-->>UI : "Attached to turn"
@@ -395,14 +439,18 @@ Actions-->>Search : "Server-side hold or proposal"
 Search-->>UI : "Confirmation or refreshed cards"
 ```
 
+**Updated** Enhanced truncation step added to preserve interactive elements during payload reduction
+
 **Diagram sources**
 - [scheduling.py:238-295](file://backend/app/services/scheduling.py#L238-L295)
+- [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740)
 - [runner.py:609-637](file://backend/app/agent/runner.py#L609-L637)
 - [runner.py:693-718](file://backend/app/agent/runner.py#L693-L718)
 - [useCardActions.ts:482-559](file://frontend/src/hooks/useCardActions.ts#L482-L559)
 
 **Section sources**
 - [scheduling.py:238-295](file://backend/app/services/scheduling.py#L238-L295)
+- [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740)
 - [runner.py:609-637](file://backend/app/agent/runner.py#L609-L637)
 - [runner.py:693-718](file://backend/app/agent/runner.py#L693-L718)
 - [useCardActions.ts:482-559](file://frontend/src/hooks/useCardActions.ts#L482-L559)
@@ -412,10 +460,10 @@ Family options differ from ordinary slot grids:
 
 - A family option is one complete plan for multiple people.
 - It carries an ordered list of slots, one per person.
-- Its identity is derived from the plan’s slot sequence and patient ids.
+- Its identity is derived from the plan's slot sequence and patient ids.
 - Holding a family option books everyone together.
 - When a request is settled, the whole family option and its nested slots become context.
-- The frontend disables a family option card when it is settled or when the message’s offered grids are history.
+- The frontend disables a family option card when it is settled or when the message's offered grids are history.
 
 ```mermaid
 flowchart TD
@@ -500,6 +548,7 @@ UseCardActionsTS --> ProposalCardViewTSX
 ChatPY["chat.py"] --> RunnerPY["runner.py"]
 RunnerPY --> ReplyFormatPY["reply_format.py"]
 RunnerPY --> SchedulingPY["scheduling.py"]
+RunnerPY --> ToolsPY["tools.py"]
 SchedulingPY --> ProposalsPY["proposals.py"]
 ```
 
@@ -513,6 +562,7 @@ SchedulingPY --> ProposalsPY["proposals.py"]
 - [chat.py:233-274](file://backend/app/api/chat.py#L233-L274)
 - [runner.py:171-406](file://backend/app/agent/runner.py#L171-L406)
 - [reply_format.py:295-428](file://backend/app/agent/reply_format.py#L295-L428)
+- [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740)
 - [scheduling.py:238-295](file://backend/app/services/scheduling.py#L238-L295)
 - [proposals.py:35-141](file://backend/app/models/proposals.py#L35-L141)
 
@@ -526,6 +576,7 @@ SchedulingPY --> ProposalsPY["proposals.py"]
 - [chat.py:233-274](file://backend/app/api/chat.py#L233-L274)
 - [runner.py:171-406](file://backend/app/agent/runner.py#L171-L406)
 - [reply_format.py:295-428](file://backend/app/agent/reply_format.py#L295-L428)
+- [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740)
 - [scheduling.py:238-295](file://backend/app/services/scheduling.py#L238-L295)
 - [proposals.py:35-141](file://backend/app/models/proposals.py#L35-L141)
 
@@ -535,21 +586,23 @@ SchedulingPY --> ProposalsPY["proposals.py"]
 - **Settlement projection**: Settling grids is applied to displayed cards rather than mutating stored rows, avoiding expensive full-thread mutations on every read.
 - **Frontend refresh batching**: Availability and pending-proposal checks are debounced and de-duplicated to reduce network churn.
 - **Restore path**: The restore endpoint projects cards against live state once per message, keeping the client consistent without replaying the full agent loop.
-
-[No sources needed since this section provides general guidance]
+- **Enhanced truncation**: Tool result truncation preserves interactive elements while reducing payload size, improving performance without sacrificing functionality.
 
 ## Troubleshooting Guide
 Common issues and how the system handles them:
 
 | Symptom | Likely Cause | System Behavior |
 |---|---|---|
-| Duplicate slot or proposal card appears | Retried tool call or re-derived proposal | Runner deduplicates by identity |
+| Duplicate slot or proposal card appears | Retried tool call or re-derived proposal | Runner deduplicates by identity with enhanced logic |
 | Old grid stays clickable after holding a time | Missing settlement projection | `settle_superseded_grids` marks grids as context |
 | Prose asks the patient to pick a time when the grid is settled | Model wrote conflicting prose | Runner replaces prose with settled intro |
 | Prose points at a grid that is not on screen | Transcript drift between prose and cards | Frontend hides the turn if it looks like an offer without a grid |
 | Family option click selects a historical option | Browser reconstructed names instead of posting identity | Runner forces `option_identity` and `request_id` from the action |
 | Stale slot remains clickable after refresh | Frontend did not update availability state | `useCardActions.resync` compares server answers and retired ids |
 | Proposal card still shows buttons after confirmation | Local state not synchronized | Pending-proposal set is refreshed and resolved cards are removed |
+| Large payload causes timeout | Insufficient truncation | Enhanced truncation preserves cards while trimming secondary data |
+
+**Updated** Added troubleshooting entry for payload truncation issues
 
 **Section sources**
 - [runner.py:597-648](file://backend/app/agent/runner.py#L597-L648)
@@ -557,9 +610,8 @@ Common issues and how the system handles them:
 - [reply_format.py:201-222](file://backend/app/agent/reply_format.py#L201-L222)
 - [liveCards.ts:57-77](file://frontend/src/lib/liveCards.ts#L57-L77)
 - [useCardActions.ts:291-386](file://frontend/src/hooks/useCardActions.ts#L291-L386)
-- [useCardActions.ts:562-680](file://frontend/src/hooks/useCardActions.ts#L562-L680)
+- [useCardActions.ts:562-680](file://frontend/src/hooks/useCardActions.ts#L562-680)
+- [tools.py:617-740](file://backend/app/agent/tools.py#L617-L740)
 
 ## Conclusion
-The card management system treats cards as the display truth for scheduling interactions. Backend services derive cards from SQLite, the runner merges and deduplicates them safely, and the frontend renders them as grids, family options, and proposals. The identity system prevents duplicates, the merge strategy preserves important information while replacing stale offers, and the settlement process ensures that already-held or booked requests are shown as context rather than clickable offers. Together, these pieces keep the conversation honest, resilient to retries and restores, and aligned with the database state.
-
-[No sources needed since this section summarizes without analyzing specific files]
+The card management system treats cards as the display truth for scheduling interactions. Backend services derive cards from SQLite, the runner merges and deduplicates them safely with enhanced logic, and the frontend renders them as grids, family options, and proposals. The identity system prevents duplicates with improved robustness, the merge strategy preserves important information while replacing stale offers with better separation between informational and availability cards, and the settlement process ensures that already-held or booked requests are shown as context rather than clickable offers. Enhanced truncation preserves interactive elements while optimizing payload sizes. Together, these pieces keep the conversation honest, resilient to retries and restores, and aligned with the database state.

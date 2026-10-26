@@ -59,6 +59,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.db import require_clinic_id
 from app.models import (
     Appointment,
     AppointmentStatus,
@@ -79,6 +80,7 @@ from app.observability import log_event
 from app.services import audit, generations, transactions
 from app.services.availability_engine import SlotOption, is_interval_bookable
 from app.services.transactions import SlotConflictError, WriteTransactionError, write_transaction
+from app.tenancy import ClinicContext, context_from, load_clinic_row
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +181,60 @@ def find_by_public_id(session: Session, public_id: str) -> BookingProposal | Non
     return session.scalar(
         select(BookingProposal)
         .where(BookingProposal.public_id == public_id)
+        .options(selectinload(BookingProposal.items))
+    )
+
+
+def _clinic(session: Session) -> ClinicContext:
+    """This session's tenant snapshot, for the grid a proposal is checked against.
+
+    Every row in here stamps ``clinic_id`` from the session's binding (see
+    :func:`app.db.require_clinic_id`), and an interval is validated against the
+    same binding rather than a parameter a caller could pass by mistake. One
+    clinic's slot rows checked on another clinic's slot length is exactly the
+    failure a proposal cannot recover from at confirmation time.
+
+    ``tenancy.context_from`` caches on the clinic row's ``updated_at``, so this
+    costs one indexed read on a cold cache and nothing on a warm one, even
+    though a family booking validates several intervals in a transaction.
+    """
+    clinic_id = require_clinic_id(session)
+    row = load_clinic_row(session, clinic_id)
+    if row is None:
+        raise RuntimeError(f"session is bound to a missing clinic {clinic_id}")
+    return context_from(session, row)
+
+
+def find_by_create_key(
+    session: Session,
+    clinic: ClinicContext,
+    *,
+    conversation_id: int,
+    create_key: str,
+) -> BookingProposal | None:
+    """The proposal this turn key already created, if it is still live.
+
+    A retry inside one turn must find its own hold. Without this the second
+    attempt re-derives the options, sees the slots its own first attempt is
+    holding, and reports a slot conflict for a time nobody else took.
+
+    Scoped by ``conversation_id`` as well as the key: a turn key is derived from
+    the turn, so two conversations can legitimately carry the same string and
+    must never replay each other's hold. ``clinic_id`` is matched explicitly
+    rather than left to the session's loader criterion, so a key from another
+    tenant reads as "no such proposal" instead of a row the caller may act on.
+
+    The caller decides what a lapsed or resolved proposal means: this returns
+    the row whatever its status, and ``scheduling.replay_hold`` is the one that
+    requires ``PENDING`` before handing a card back.
+    """
+    return session.scalar(
+        select(BookingProposal)
+        .where(
+            BookingProposal.clinic_id == clinic.clinic_id,
+            BookingProposal.conversation_id == conversation_id,
+            BookingProposal.create_key == create_key,
+        )
         .options(selectinload(BookingProposal.items))
     )
 
@@ -398,6 +454,7 @@ def create_proposal(
         with write_transaction(session):
             now = utcnow()
             proposal = BookingProposal(
+                clinic_id=require_clinic_id(session),
                 public_id=new_public_id("prop"),
                 conversation_id=conversation_id,
                 status=ProposalStatus.PENDING.value,
@@ -451,6 +508,7 @@ def create_proposal(
             for order_index, (item, rows) in enumerate(validated):
                 session.add(
                     ProposalItem(
+                        clinic_id=require_clinic_id(session),
                         proposal_id=proposal.id,
                         patient_id=item.patient_id,
                         provider_id=item.option.provider_id,
@@ -551,6 +609,10 @@ class _ProposalValidator:
     def __init__(self, session: Session, proposal_id: int) -> None:
         self.session = session
         self.proposal_id = proposal_id
+        # The tenant grid every interval in this transaction is measured on.
+        # Resolved once here rather than per item: a family booking validates
+        # several runs, and the snapshot is cached on the clinic row anyway.
+        self.clinic = _clinic(session)
         self.reserved: set[int] = set()
         # Interval ids this proposal relies on without holding them (the target
         # appointment's own intervals for a reschedule or cancellation).
@@ -580,6 +642,7 @@ class _ProposalValidator:
         """
         rows = is_interval_bookable(
             self.session,
+            self.clinic,
             provider_id=option.provider_id,
             starts_at=option.starts_at,
             duration_minutes=appointment_type.duration_minutes,
@@ -618,6 +681,7 @@ class _ProposalValidator:
             self.reserved.add(row.id)
             self.session.add(
                 SlotClaim(
+                    clinic_id=require_clinic_id(self.session),
                     availability_slot_id=row.id,
                     appointment_id=None,
                     held_by_proposal_id=self.proposal_id,
@@ -954,6 +1018,7 @@ def _commit_group(
 
     # 4. Create the group, then one appointment per item.
     group = BookingGroup(
+        clinic_id=require_clinic_id(session),
         public_id=new_public_id("grp"),
         conversation_id=proposal.conversation_id,
         proposal_id=proposal.id,
@@ -1012,6 +1077,7 @@ def _commit_group(
             item.result_appointment_id = appointment.id
         else:
             appointment = Appointment(
+                clinic_id=require_clinic_id(session),
                 patient_id=item.patient_id,
                 provider_id=item.provider_id,
                 appointment_type_id=appointment_type.id,
@@ -1201,6 +1267,7 @@ def _create_reschedule_replacement(
     # released (step 3), so the partial unique index is the arbiter if another
     # writer slipped in between: the whole transaction rolls back on IntegrityError.
     replacement = Appointment(
+        clinic_id=require_clinic_id(session),
         patient_id=original.patient_id,
         provider_id=item.provider_id or original.provider_id,
         appointment_type_id=appointment_type.id,
@@ -1275,7 +1342,12 @@ def _claim_rows(session: Session, appointment_id: int, rows: list[AvailabilitySl
     for row in rows:
         row.status = SlotStatus.OCCUPIED.value
         session.add(
-            SlotClaim(availability_slot_id=row.id, appointment_id=appointment_id, active=True)
+            SlotClaim(
+                clinic_id=require_clinic_id(session),
+                availability_slot_id=row.id,
+                appointment_id=appointment_id,
+                active=True,
+            )
         )
     session.flush()
 
@@ -1570,6 +1642,7 @@ def _revalidate(
 
     rows = is_interval_bookable(
         session,
+        _clinic(session),
         provider_id=item.provider_id,
         starts_at=item.proposed_starts_at,
         duration_minutes=appointment_type.duration_minutes,
@@ -1790,6 +1863,7 @@ def _record_confirm_key(
     """
     session.add(
         IdempotencyRecord(
+            clinic_id=require_clinic_id(session),
             key=key,
             scope=IDEMPOTENCY_SCOPE,
             request_fingerprint=fingerprint(

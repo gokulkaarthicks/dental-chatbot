@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from app.api.deps import CurrentPatientSession, DbSession
+from app.api.deps import CurrentClinic, CurrentPatientSession, DbSession
 from app.models import Conversation
 from app.services import conversations, patient_sessions, scheduling, staff_handoff
 from app.services.availability_engine import resolve_appointment_type
@@ -176,14 +176,18 @@ def _conversation(
     return rows[0]
 
 
-def _requester(db: DbSession, record: CurrentPatientSession, conversation: Conversation):
+def _requester(
+    db: DbSession, clinic: CurrentClinic, record: CurrentPatientSession, conversation: Conversation
+):
     patient = patient_sessions.verified_patient(db, record)
     if patient is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Verify the patient before scheduling.",
         )
-    return Requester(patient=patient, patient_session=record, conversation=conversation)
+    return Requester(
+        patient=patient, patient_session=record, conversation=conversation, clinic=clinic
+    )
 
 
 def _action_payload(result: dict) -> SchedulingActionResponse:
@@ -260,7 +264,10 @@ def _expire_lapsed(db: DbSession, conversation_id: int) -> int:
     summary="Hold a clicked slot and create an awaiting-confirmation proposal",
 )
 async def select_slot(
-    payload: SlotSelectionRequest, db: DbSession, record: CurrentPatientSession
+    payload: SlotSelectionRequest,
+    db: DbSession,
+    clinic: CurrentClinic,
+    record: CurrentPatientSession,
 ) -> SchedulingActionResponse:
     """Clicking a slot never books. It persists one proposal and returns its card.
 
@@ -272,7 +279,7 @@ async def select_slot(
     appointment".
     """
     conversation = _conversation(db, record, payload.conversation_id)
-    requester = _requester(db, record, conversation)
+    requester = _requester(db, clinic, record, conversation)
 
     def work() -> dict:
         from app.services import patients as patients_service
@@ -314,7 +321,7 @@ async def select_slot(
                 from_ui=True,
             )
 
-        appointment_type, _ = resolve_appointment_type(db, payload.appointment_type)
+        appointment_type, _ = resolve_appointment_type(db, clinic, payload.appointment_type)
         if appointment_type is None:
             return {
                 "ok": False,
@@ -323,6 +330,7 @@ async def select_slot(
             }
         options = scheduling.options_for_slots(
             db,
+            clinic,
             appointment_type=appointment_type,
             slot_ids=payload.slot_ids,
             patient_id=requester.patient.id,
@@ -368,7 +376,10 @@ async def select_slot(
     summary="Re-check the slots behind a rendered grid",
 )
 def refresh_availability(
-    payload: AvailabilityRefreshRequest, db: DbSession, record: CurrentPatientSession
+    payload: AvailabilityRefreshRequest,
+    db: DbSession,
+    clinic: CurrentClinic,
+    record: CurrentPatientSession,
 ) -> AvailabilityRefreshResponse:
     """Which of these times can still be held, read fresh from SQLite.
 
@@ -384,7 +395,7 @@ def refresh_availability(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Verify the patient before scheduling."
         )
-    appointment_type, _ = resolve_appointment_type(db, payload.appointment_type)
+    appointment_type, _ = resolve_appointment_type(db, clinic, payload.appointment_type)
     if appointment_type is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -394,6 +405,7 @@ def refresh_availability(
     requested = list(dict.fromkeys(payload.slot_ids))
     options = scheduling.options_for_slots(
         db,
+        clinic,
         appointment_type=appointment_type,
         slot_ids=requested,
         patient_id=patient.id,
@@ -405,7 +417,7 @@ def refresh_availability(
     # Keep the meaning of the grid: a replacement time stays a reschedule card
     # when a move is pending, so re-rendering it cannot turn it into a booking.
     conversation = _conversation(db, record, payload.conversation_id)
-    requester = _requester(db, record, conversation)
+    requester = _requester(db, clinic, record, conversation)
     # A pending move is the context these times belong to, even after another
     # turn rendered them as ordinary slots.
     target_id = scheduling.pending_target(db, requester)
@@ -461,11 +473,12 @@ def refresh_availability(
 async def confirm(
     proposal_id: str,
     payload: ProposalActionRequest,
+    clinic: CurrentClinic,
     db: DbSession,
     record: CurrentPatientSession,
 ) -> SchedulingActionResponse:
     conversation = _conversation(db, record, payload.conversation_id)
-    requester = _requester(db, record, conversation)
+    requester = _requester(db, clinic, record, conversation)
 
     def work() -> dict:
         # One button, two kinds: a new-booking card books, a reschedule or
@@ -496,10 +509,11 @@ async def decline(
     proposal_id: str,
     payload: ProposalActionRequest,
     db: DbSession,
+    clinic: CurrentClinic,
     record: CurrentPatientSession,
 ) -> SchedulingActionResponse:
     conversation = _conversation(db, record, payload.conversation_id)
-    requester = _requester(db, record, conversation)
+    requester = _requester(db, clinic, record, conversation)
 
     def work() -> dict:
         return scheduling.decline(db, requester=requester, proposal_id=proposal_id)
@@ -513,7 +527,7 @@ async def decline(
     response_model=SchedulingActionResponse,
     summary="The verified patient's real appointments",
 )
-def appointments_list(db: DbSession, record: CurrentPatientSession):
+def appointments_list(db: DbSession, clinic: CurrentClinic, record: CurrentPatientSession):
     from app.services import appointments as appointments_service
 
     patient = patient_sessions.verified_patient(db, record)
@@ -521,7 +535,7 @@ def appointments_list(db: DbSession, record: CurrentPatientSession):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Verify the patient first."
         )
-    views = appointments_service.list_for_patient(db, patient.id)
+    views = appointments_service.list_for_patient(db, clinic, patient.id)
     return SchedulingActionResponse(
         ok=True,
         cards=[scheduling.appointment_cards(views)] if views else [],

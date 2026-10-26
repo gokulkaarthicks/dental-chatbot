@@ -40,7 +40,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from starlette.concurrency import run_in_threadpool
 
-from app.api.deps import CurrentStaffSession, CurrentStaffUser, DbSession
+from app.api.deps import CurrentClinic, CurrentStaffSession, CurrentStaffUser, DbSession
+from app.db import require_clinic_id
 from app.models import (
     AlertStatus,
     Conversation,
@@ -54,7 +55,7 @@ from app.models import (
 from app.services import audit, staff_auth, staff_handoff_board, staff_scheduling
 from app.services.staff_handoff_board import HandoffError
 from app.services.staff_scheduling import AppointmentFilters, StaffActionError
-from app.timeutil import clinic_now
+from app.tenancy import ClinicContext
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ def _clear_cookies(response: Response) -> None:
         response.delete_cookie(name, path=COOKIE_PATH)
 
 
-def _parse_local(value: str) -> datetime:
+def _parse_local(clinic: ClinicContext, value: str) -> datetime:
     """Parse a clinic-local naive timestamp, rejecting anything ambiguous."""
     try:
         parsed = datetime.fromisoformat(value)
@@ -179,7 +180,7 @@ def _parse_local(value: str) -> datetime:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Times are clinic-local; send them without a timezone offset.",
         )
-    if parsed < clinic_now() - _GRACE:
+    if parsed < clinic.config.now() - _GRACE:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="That time is in the past.",
@@ -224,7 +225,7 @@ def _action_error(exc: StaffActionError | HandoffError) -> HTTPException:
 
 
 @router.post("/session", response_model=StaffSessionResponse)
-async def login(payload: LoginRequest, request: Request, response: Response, db: DbSession) -> dict:
+async def login(payload: LoginRequest, request: Request, response: Response, db: DbSession, clinic: CurrentClinic) -> dict:
     """Sign in and receive the HttpOnly session cookie.
 
     Responds identically for unknown usernames, wrong passwords, and disabled
@@ -264,14 +265,15 @@ async def login(payload: LoginRequest, request: Request, response: Response, db:
         "user": staff_auth.public_user(user),
         "csrf_token": result["issued"].csrf_token,
         "expires_at": result["issued"].expires_at.isoformat(timespec="seconds"),
-        "clinic_now": clinic_now().isoformat(timespec="minutes"),
+        "clinic_now": clinic.config.now().isoformat(timespec="minutes"),
         "demo_notice": "Demonstration login. The root account uses a documented demo password.",
     }
 
 
 @router.get("/session", response_model=StaffSessionResponse)
 async def current_session(
-    request: Request, db: DbSession, record: CurrentStaffSession, user: CurrentStaffUser
+    request: Request, db: DbSession,
+    clinic: CurrentClinic, record: CurrentStaffSession, user: CurrentStaffUser
 ) -> dict:
     """Who am I? Used on every dashboard load to decide login vs. dashboard.
 
@@ -285,7 +287,7 @@ async def current_session(
         # Echo the existing CSRF token so a refresh does not force a re-login.
         "csrf_token": csrf if csrf and staff_auth.csrf_matches(record, csrf) else None,
         "expires_at": record.expires_at.isoformat(timespec="seconds"),
-        "clinic_now": clinic_now().isoformat(timespec="minutes"),
+        "clinic_now": clinic.config.now().isoformat(timespec="minutes"),
         "demo_notice": "Demonstration login. The root account uses a documented demo password.",
     }
 
@@ -317,8 +319,9 @@ async def logout(response: Response, db: DbSession, record: CurrentStaffSession)
 
 
 @router.get("/summary", response_model=SummaryResponse)
-async def summary(db: DbSession, user: CurrentStaffUser) -> dict:
-    counts = await run_in_threadpool(staff_handoff_board.summary_counts, db)
+async def summary(db: DbSession,
+    clinic: CurrentClinic, user: CurrentStaffUser) -> dict:
+    counts = await run_in_threadpool(staff_handoff_board.summary_counts, db, clinic)
     return {"counts": counts, "generated_at": utcnow().isoformat(timespec="seconds")}
 
 
@@ -339,7 +342,10 @@ async def conversation_feedback(
     counts = dict(
         db.execute(
             select(ConversationFeedback.rating, func.count(ConversationFeedback.id))
-            .where(ConversationFeedback.created_at >= since)
+            .where(
+                ConversationFeedback.created_at >= since,
+                ConversationFeedback.clinic_id == require_clinic_id(db),
+            )
             .group_by(ConversationFeedback.rating)
         ).all()
     )
@@ -380,6 +386,7 @@ async def conversation_feedback(
 @router.get("/appointments")
 async def list_appointments(
     db: DbSession,
+    clinic: CurrentClinic,
     user: CurrentStaffUser,
     day: str | None = Query(default=None, description="YYYY-MM-DD"),
     day_from: str | None = Query(default=None),
@@ -400,9 +407,9 @@ async def list_appointments(
         upcoming_only=upcoming_only,
         limit=limit,
     )
-    rows = await run_in_threadpool(staff_scheduling.list_appointments, db, filters)
+    rows = await run_in_threadpool(staff_scheduling.list_appointments, db, clinic, filters)
     return {
-        "appointments": [staff_scheduling.appointment_dict(row) for row in rows],
+        "appointments": [staff_scheduling.appointment_dict(clinic, row) for row in rows],
         "providers": staff_scheduling.provider_options(db),
         "appointment_types": staff_scheduling.appointment_type_options(db),
         "count": len(rows),
@@ -410,17 +417,19 @@ async def list_appointments(
 
 
 @router.get("/appointments/{appointment_id}")
-async def appointment_detail(appointment_id: int, db: DbSession, user: CurrentStaffUser) -> dict:
+async def appointment_detail(appointment_id: int, db: DbSession,
+    clinic: CurrentClinic, user: CurrentStaffUser) -> dict:
     row = await run_in_threadpool(staff_scheduling.get_appointment, db, appointment_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found.")
     history = await run_in_threadpool(staff_scheduling.appointment_history, db, appointment_id)
-    return {"appointment": staff_scheduling.appointment_dict(row), "history": history}
+    return {"appointment": staff_scheduling.appointment_dict(clinic, row), "history": history}
 
 
 @router.get("/slots")
 async def available_slots(
     db: DbSession,
+    clinic: CurrentClinic,
     user: CurrentStaffUser,
     day: str = Query(description="YYYY-MM-DD"),
     provider_id: int | None = Query(default=None),
@@ -434,6 +443,7 @@ async def available_slots(
         slots = await run_in_threadpool(
             staff_scheduling.available_slots,
             db,
+            clinic,
             provider_id=provider_id,
             appointment_type_code=appointment_type,
             day=target,
@@ -445,13 +455,15 @@ async def available_slots(
 
 @router.post("/appointments", status_code=status.HTTP_201_CREATED)
 async def create_appointment(
-    payload: CreateAppointmentRequest, db: DbSession, user: CurrentStaffUser
+    payload: CreateAppointmentRequest, db: DbSession,
+    clinic: CurrentClinic, user: CurrentStaffUser
 ) -> dict:
-    starts_at = _parse_local(payload.starts_at)
+    starts_at = _parse_local(clinic, payload.starts_at)
     try:
         row = await run_in_threadpool(
             staff_scheduling.create_appointment,
             db,
+            clinic,
             staff=user,
             patient_id=payload.patient_id,
             provider_id=payload.provider_id,
@@ -461,18 +473,20 @@ async def create_appointment(
         )
     except StaffActionError as exc:
         raise _action_error(exc) from exc
-    return {"appointment": staff_scheduling.appointment_dict(row)}
+    return {"appointment": staff_scheduling.appointment_dict(clinic, row)}
 
 
 @router.post("/appointments/{appointment_id}/reschedule")
 async def reschedule_appointment(
-    appointment_id: int, payload: RescheduleRequest, db: DbSession, user: CurrentStaffUser
+    appointment_id: int, payload: RescheduleRequest, db: DbSession,
+    clinic: CurrentClinic, user: CurrentStaffUser
 ) -> dict:
-    starts_at = _parse_local(payload.starts_at)
+    starts_at = _parse_local(clinic, payload.starts_at)
     try:
         row = await run_in_threadpool(
             staff_scheduling.reschedule_appointment,
             db,
+            clinic,
             staff=user,
             appointment_id=appointment_id,
             starts_at=starts_at,
@@ -481,12 +495,13 @@ async def reschedule_appointment(
         )
     except StaffActionError as exc:
         raise _action_error(exc) from exc
-    return {"appointment": staff_scheduling.appointment_dict(row)}
+    return {"appointment": staff_scheduling.appointment_dict(clinic, row)}
 
 
 @router.post("/appointments/{appointment_id}/cancel")
 async def cancel_appointment(
-    appointment_id: int, payload: CancelRequest, db: DbSession, user: CurrentStaffUser
+    appointment_id: int, payload: CancelRequest, db: DbSession,
+    clinic: CurrentClinic, user: CurrentStaffUser
 ) -> dict:
     try:
         row = await run_in_threadpool(
@@ -498,18 +513,19 @@ async def cancel_appointment(
         )
     except StaffActionError as exc:
         raise _action_error(exc) from exc
-    return {"appointment": staff_scheduling.appointment_dict(row)}
+    return {"appointment": staff_scheduling.appointment_dict(clinic, row)}
 
 
 @router.post("/appointments/{appointment_id}/complete")
-async def complete_appointment(appointment_id: int, db: DbSession, user: CurrentStaffUser) -> dict:
+async def complete_appointment(appointment_id: int, db: DbSession,
+    clinic: CurrentClinic, user: CurrentStaffUser) -> dict:
     try:
         row = await run_in_threadpool(
             staff_scheduling.complete_appointment, db, staff=user, appointment_id=appointment_id
         )
     except StaffActionError as exc:
         raise _action_error(exc) from exc
-    return {"appointment": staff_scheduling.appointment_dict(row)}
+    return {"appointment": staff_scheduling.appointment_dict(clinic, row)}
 
 
 # --------------------------------------------------------------------------- #
@@ -697,11 +713,12 @@ async def search_patients(
 
 
 @router.get("/patients/{patient_id}")
-async def patient_detail(patient_id: int, db: DbSession, user: CurrentStaffUser) -> dict:
+async def patient_detail(patient_id: int, db: DbSession,
+    clinic: CurrentClinic, user: CurrentStaffUser) -> dict:
     patient = db.get(Patient, patient_id)
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found.")
-    appointments = await run_in_threadpool(staff_scheduling.list_appointments_by_patient, db, patient_id)
+    appointments = await run_in_threadpool(staff_scheduling.list_appointments_by_patient, db, clinic, patient_id)
     return {
         "patient": {
             "id": patient.id,
@@ -712,5 +729,5 @@ async def patient_detail(patient_id: int, db: DbSession, user: CurrentStaffUser)
             "insurance_member_id": patient.insurance_member_id,
             "notes": patient.notes,
         },
-        "appointments": [staff_scheduling.appointment_dict(row) for row in appointments],
+        "appointments": [staff_scheduling.appointment_dict(clinic, row) for row in appointments],
     }

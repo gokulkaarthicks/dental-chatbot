@@ -1,3 +1,10 @@
+/**
+ * The message composer: one field, a send control, and optional dictation.
+ *
+ * Dictation appends to whatever is already typed rather than replacing it, and
+ * a DictationError maps to a sentence a patient can act on rather than a code.
+ */
+
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { ArrowUp, Mic } from "lucide-react";
 

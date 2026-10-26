@@ -11,13 +11,9 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 
-from app.agent.scheduling_tools import (
-    FamilyMemberArgs,
-    StaffRequestArgs,
-    _family_member_patients,
-    _tool_create_staff_request,
-)
-from app.agent.tools import ToolContext
+from app.agent.tools._helpers import _family_member_patients
+from app.agent.tools.domains.family import FamilyMemberArgs
+from app.db import require_clinic_id
 from app.models import (
     Appointment,
     AppointmentStatus,
@@ -34,22 +30,27 @@ from app.services import date_parsing, scheduling
 from app.services.date_parsing import resolve_preferences
 from app.services.proposals import find_by_public_id, release_expired_holds
 from app.services.scheduling import FamilyMemberInput
+from app.timeutil import SchedulingConfig
+from tests.support import TEST_CONFIG, clinic_of, deps_for, invoke_tool
 
 
 def _family(session, requester):
     ellie = Patient(
+            clinic_id=requester.clinic.clinic_id,
         full_name="Ellie Whitfield",
         phone=requester.patient.phone,
         date_of_birth=date(2015, 2, 3),
         insurance_provider="Self-pay",
     )
     noah = Patient(
+            clinic_id=requester.clinic.clinic_id,
         full_name="Noah Whitfield",
         phone=requester.patient.phone,
         date_of_birth=date(2017, 6, 4),
         insurance_provider="Self-pay",
     )
     group = FamilyGroup(
+            clinic_id=requester.clinic.clinic_id,
         seed_key="request-regression",
         name="Whitfield family",
         shared_phone=requester.patient.phone,
@@ -58,6 +59,7 @@ def _family(session, requester):
     session.flush()
     session.add(
         AppointmentType(
+                clinic_id=requester.clinic.clinic_id,
             code="checkup",
             name="Checkup",
             description="Routine exam",
@@ -71,12 +73,15 @@ def _family(session, requester):
     session.add_all(
         [
             FamilyMember(
+                    clinic_id=requester.clinic.clinic_id,
                 family_group_id=group.id,
                 patient_id=requester.patient.id,
                 relation_to_primary="self",
             ),
-            FamilyMember(family_group_id=group.id, patient_id=ellie.id, relation_to_primary="child"),
-            FamilyMember(family_group_id=group.id, patient_id=noah.id, relation_to_primary="child"),
+            FamilyMember(
+    clinic_id=requester.clinic.clinic_id,family_group_id=group.id, patient_id=ellie.id, relation_to_primary="child"),
+            FamilyMember(
+    clinic_id=requester.clinic.clinic_id,family_group_id=group.id, patient_id=noah.id, relation_to_primary="child"),
         ]
     )
     session.commit()
@@ -95,6 +100,7 @@ def _add_slots(
         while cursor < end:
             session.add(
                 AvailabilitySlot(
+                        clinic_id=require_clinic_id(session),
                     provider_id=provider.id,
                     starts_at=cursor,
                     ends_at=cursor + timedelta(minutes=30),
@@ -106,9 +112,16 @@ def _add_slots(
 
 
 def _freeze_availability_clock(monkeypatch) -> None:
+    """Stop the tenant clock so the horizon-relative searches are deterministic.
+
+    Patched on ``SchedulingConfig`` instead of a module-level ``clinic_now``,
+    which the per-tenant refactor removed: every service now reads the clock
+    through the clinic it was handed, so freezing that one pair of methods
+    freezes the whole turn without threading a timestamp through each call.
+    """
     frozen = datetime(2026, 10, 25, 7, 0)
-    monkeypatch.setattr(date_parsing, "clinic_today", lambda: frozen.date())
-    monkeypatch.setattr("app.services.availability_engine.clinic_now", lambda: frozen)
+    monkeypatch.setattr(SchedulingConfig, "today", lambda _self: frozen.date())
+    monkeypatch.setattr(SchedulingConfig, "now", lambda _self: frozen)
 
 
 def test_both_children_extend_the_existing_request_without_dropping_parent(scenario) -> None:
@@ -145,13 +158,9 @@ def test_both_children_extend_the_existing_request_without_dropping_parent(scena
 def test_both_expands_to_every_authorized_child_and_keeps_the_requester(scenario) -> None:
     session, requester = scenario
     ellie, noah = _family(session, requester)
-    context = ToolContext(
-        session=session,
-        patient_session=requester.patient_session,
-        conversation_id=requester.conversation.id,
-    )
+    deps = deps_for(session, requester)
     members, problem = _family_member_patients(
-        context,
+        deps,
         requester,
         [
             FamilyMemberArgs(
@@ -378,17 +387,14 @@ def test_family_availability_failure_retries_before_creating_callback(scenario) 
         date_phrases=["2030-05-07"],
         time_windows=["morning"],
     )
-    context = ToolContext(
-        session=session,
-        patient_session=requester.patient_session,
-        conversation_id=requester.conversation.id,
-    )
-    result = _tool_create_staff_request(
-        context,
-        StaffRequestArgs(
-            topic="callback",
-            details="Family availability could not be retrieved; arrange the household booking.",
-        ),
+    deps = deps_for(session, requester)
+    result = invoke_tool(
+        deps,
+        "create_staff_request",
+        {
+            "topic": "callback",
+            "details": "Family availability could not be retrieved; arrange the household booking.",
+        },
     )
     assert result["cards"]
     assert result["cards"][0]["type"] == "family_option"
@@ -418,6 +424,7 @@ def test_family_search_asks_for_a_missing_member_type(scenario) -> None:
 
 def test_preferred_date_can_fall_back_to_later_availability() -> None:
     preferences = resolve_preferences(
+        TEST_CONFIG,
         date_phrases=["October 31 or whenever possible"],
         today=date(2026, 10, 25),
     )
@@ -536,18 +543,15 @@ def test_complete_unavailability_does_not_create_a_callback(scenario) -> None:
         date_phrases=["2030-05-12"],
         back_to_back=True,
     )
-    context = ToolContext(
-        session=session,
-        patient_session=requester.patient_session,
-        conversation_id=requester.conversation.id,
-    )
+    deps = deps_for(session, requester)
 
-    result = _tool_create_staff_request(
-        context,
-        StaffRequestArgs(
-            topic="callback",
-            details="Family availability could not find a complete option; arrange the booking.",
-        ),
+    result = invoke_tool(
+        deps,
+        "create_staff_request",
+        {
+            "topic": "callback",
+            "details": "Family availability could not find a complete option; arrange the booking.",
+        },
     )
 
     assert result["availability_status"] == "unavailable"
@@ -574,18 +578,15 @@ def test_availability_tool_failure_still_escalates(monkeypatch, scenario) -> Non
         "refresh_scheduling_request",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("database unavailable")),
     )
-    context = ToolContext(
-        session=session,
-        patient_session=requester.patient_session,
-        conversation_id=requester.conversation.id,
-    )
+    deps = deps_for(session, requester)
 
-    result = _tool_create_staff_request(
-        context,
-        StaffRequestArgs(
-            topic="callback",
-            details="The availability search failed; please arrange the booking.",
-        ),
+    result = invoke_tool(
+        deps,
+        "create_staff_request",
+        {
+            "topic": "callback",
+            "details": "The availability search failed; please arrange the booking.",
+        },
     )
 
     assert result["kind"] == "callback"

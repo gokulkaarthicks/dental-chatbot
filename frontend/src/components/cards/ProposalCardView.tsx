@@ -1,3 +1,11 @@
+/**
+ * A proposal awaiting the patient's decision: confirm, change, or cancel.
+ *
+ * Every state the server can report -- pending, accepted, rejected,
+ * superseded, expired -- renders from the same frame, so a card that is no
+ * longer actionable still shows what it used to offer instead of vanishing.
+ */
+
 import { Button } from "../Button";
 import { CardShell, formatSlotDay, formatSlotTime } from "./CardShell";
 import type { ProposalActions, ProposalCard, ProposalItem } from "../../lib/cards";

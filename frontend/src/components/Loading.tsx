@@ -1,3 +1,15 @@
+/**
+ * Loading and error blocks for the patient surfaces.
+ *
+ * Loading keeps a spinner plus a label and stays the height of the content it
+ * replaces, so a slow fetch does not shift the page. Errors are text first and
+ * only offer a retry when the caller can actually re-run the request.
+ *
+ * The staff dashboard keeps its own equivalents under the `sd-` namespace --
+ * `SkeletonRows` for tabular loading and `ErrorState` for failures -- because
+ * dashboard rows need a different shape. Both draw from the same tokens.
+ */
+
 type LoadingBlockProps = {
   label?: string;
   variant?: "inline" | "block";

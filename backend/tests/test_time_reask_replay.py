@@ -11,14 +11,15 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from langchain_core.messages import AIMessage
 from sqlalchemy.orm import sessionmaker
 
 from app.agent import runner
-from app.ai.deepseek import AssistantTurn
-from app.db import create_db_engine
+from app.db import bind_tenant, create_db_engine
 from app.models import Base, Patient, PatientSession
 from app.services import conversations, patient_sessions
 from app.services.scheduling import Requester
+from tests.support import ScriptedChatModel, seed_clinic
 
 GRID = [
     {
@@ -36,14 +37,9 @@ GRID = [
 ]
 
 
-class SilentClient:
+def silent_model(reply: str) -> ScriptedChatModel:
     """A model that answers a request for times with prose and no tool call."""
-
-    def __init__(self, reply: str) -> None:
-        self.reply = reply
-
-    def chat(self, *, messages, tools=None, **kwargs) -> AssistantTurn:  # noqa: ANN001
-        return AssistantTurn(content=self.reply, tool_calls=[], finish_reason="stop")
+    return ScriptedChatModel([AIMessage(content=reply)])
 
 
 @pytest.fixture()
@@ -51,7 +47,10 @@ def thread(tmp_path):
     engine = create_db_engine(f"sqlite+pysqlite:///{tmp_path / 'reask.db'}")
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+    clinic = seed_clinic(session, slug="reask")
+    bind_tenant(session, clinic.clinic_id)
     patient = Patient(
+        clinic_id=clinic.clinic_id,
         full_name="Dharshs",
         phone="+19999998787",
         date_of_birth=date(1999, 7, 25),
@@ -76,7 +75,7 @@ def thread(tmp_path):
     )
     conversations.append_patient_message(session, conversation, "mornign")
     session.commit()
-    yield session, conversation, patient_session
+    yield session, conversation, patient_session, clinic
     session.close()
     engine.dispose()
 
@@ -89,13 +88,14 @@ def _last_reply(session, conversation):
 
 
 def test_a_re_ask_replays_the_grid_on_its_own_turn(thread) -> None:
-    session, conversation, patient_session = thread
+    session, conversation, patient_session, clinic = thread
     result = runner.run_turn(
         session,
+        clinic,
         conversation=conversation,
         patient_session=patient_session,
         patient_text="do you have any other slots on monday",
-        client=SilentClient("Those times are no longer on screen. Ask me again and I'll check."),
+        llm=silent_model("Those times are no longer on screen. Ask me again and I'll check."),
     )
     assert result.degraded is False
     reply = _last_reply(session, conversation)
@@ -110,13 +110,14 @@ def test_a_re_ask_replays_the_grid_on_its_own_turn(thread) -> None:
 
 
 def test_the_replayed_grid_is_attached_only_once(thread) -> None:
-    session, conversation, patient_session = thread
+    session, conversation, patient_session, clinic = thread
     runner.run_turn(
         session,
+        clinic,
         conversation=conversation,
         patient_session=patient_session,
         patient_text="current availability",
-        client=SilentClient("Sure, one moment."),
+        llm=silent_model("Sure, one moment."),
     )
     replies = [
         message

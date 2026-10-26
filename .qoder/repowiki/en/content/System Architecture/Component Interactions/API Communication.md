@@ -12,13 +12,26 @@
 - [deps.py](file://backend/app/api/deps.py)
 - [security.py](file://backend/app/services/security.py)
 - [patient_sessions.py](file://backend/app/services/patient_sessions.py)
+- [schemas.py](file://backend/app/schemas.py)
+- [conversations.py](file://backend/app/models/conversations.py)
 - [client.ts](file://frontend/src/api/client.ts)
 - [staff.ts](file://frontend/src/api/staff.ts)
 - [sessionStore.ts](file://frontend/src/lib/sessionStore.ts)
 - [useChat.ts](file://frontend/src/hooks/useChat.ts)
+- [MessageBubble.tsx](file://frontend/src/components/chat/MessageBubble.tsx)
+- [ChatPage.tsx](file://frontend/src/pages/ChatPage.tsx)
+- [FeedbackSection.tsx](file://frontend/src/pages/staff/sections/FeedbackSection.tsx)
 - [StaffAuthContext.tsx](file://frontend/src/pages/staff/StaffAuthContext.tsx)
 - [StaffLoginPage.tsx](file://frontend/src/pages/staff/StaffLoginPage.tsx)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added comprehensive documentation for the new chat feedback API endpoint at `/conversations/{conversation_id}/feedback`
+- Updated request/response schemas section with ChatFeedbackRequest and ChatFeedbackResponse
+- Enhanced authentication section to include feedback-specific validation rules
+- Added new section covering feedback UI components and staff feedback dashboard
+- Updated common API interactions with feedback submission examples
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -55,6 +68,8 @@ FE_Staff["Staff API Client<br/>staff.ts"]
 FE_Hooks["Chat Hook<br/>useChat.ts"]
 FE_Store["Tab Session Store<br/>sessionStore.ts"]
 FE_Auth["Staff Auth Context<br/>StaffAuthContext.tsx"]
+FE_Message["Message Bubble<br/>MessageBubble.tsx"]
+FE_Feedback["Feedback Section<br/>FeedbackSection.tsx"]
 end
 subgraph "Backend FastAPI"
 App["Application Factory<br/>main.py"]
@@ -73,6 +88,8 @@ FE_Staff --> App
 FE_Hooks --> FE_Client
 FE_Store --> FE_Hooks
 FE_Auth --> FE_Staff
+FE_Message --> FE_Hooks
+FE_Feedback --> FE_Staff
 App --> Health
 App --> Clinic
 App --> Demo
@@ -91,7 +108,7 @@ PSession --> Sec
 - [health.py:23-57](file://backend/app/api/health.py#L23-L57)
 - [clinic.py:14-32](file://backend/app/api/clinic.py#L14-L32)
 - [demo.py:15-22](file://backend/app/api/demo.py#L15-L22)
-- [chat.py:51-346](file://backend/app/api/chat.py#L51-L346)
+- [chat.py:51-347](file://backend/app/api/chat.py#L51-L347)
 - [scheduling.py:32-553](file://backend/app/api/scheduling.py#L32-L553)
 - [staff.py:61-716](file://backend/app/api/staff.py#L61-L716)
 - [deps.py:1-98](file://backend/app/api/deps.py#L1-L98)
@@ -101,6 +118,8 @@ PSession --> Sec
 - [staff.ts:19-404](file://frontend/src/api/staff.ts#L19-L404)
 - [sessionStore.ts:1-138](file://frontend/src/lib/sessionStore.ts#L1-L138)
 - [useChat.ts:271-749](file://frontend/src/hooks/useChat.ts#L271-L749)
+- [MessageBubble.tsx:1-233](file://frontend/src/components/chat/MessageBubble.tsx#L1-L233)
+- [FeedbackSection.tsx:1-139](file://frontend/src/pages/staff/sections/FeedbackSection.tsx#L1-L139)
 - [StaffAuthContext.tsx:42-131](file://frontend/src/pages/staff/StaffAuthContext.tsx#L42-L131)
 
 **Section sources**
@@ -136,7 +155,7 @@ PSession --> Sec
 - [health.py:23-57](file://backend/app/api/health.py#L23-L57)
 - [clinic.py:14-32](file://backend/app/api/clinic.py#L14-L32)
 - [demo.py:15-22](file://backend/app/api/demo.py#L15-L22)
-- [chat.py:111-346](file://backend/app/api/chat.py#L111-L346)
+- [chat.py:111-347](file://backend/app/api/chat.py#L111-L347)
 - [scheduling.py:216-553](file://backend/app/api/scheduling.py#L216-L553)
 - [staff.py:226-716](file://backend/app/api/staff.py#L226-L716)
 
@@ -198,6 +217,7 @@ end
   - GET for reads, POST for mutations, DELETE for logout.
 - Idempotency:
   - Scheduling actions accept client-generated keys (`create_key`, `confirm_key`) so retries do not duplicate work.
+  - Feedback submissions are idempotent per message - re-rating updates existing rows.
 - Consistent error shape:
   - Global exception handlers return `detail`, `error`, and `request_id`.
 - Versioning and discovery:
@@ -238,11 +258,37 @@ end
   - Returns reply, updated messages, cards, session state, and degraded flag.
 - `POST /api/chat/conversations/{conversation_id}/feedback`:
   - Rates an assistant message within the same session-owned conversation.
+  - **Updated** New endpoint for collecting patient feedback on assistant responses.
 
 **Section sources**
-- [chat.py:111-346](file://backend/app/api/chat.py#L111-L346)
-- [client.ts:137-301](file://frontend/src/api/client.ts#L137-L301)
+- [chat.py:111-347](file://backend/app/api/chat.py#L111-L347)
+- [client.ts:137-307](file://frontend/src/api/client.ts#L137-L307)
 - [useChat.ts:548-623](file://frontend/src/hooks/useChat.ts#L548-L623)
+
+#### Chat Feedback API
+- `POST /api/chat/conversations/{conversation_id}/feedback`:
+  - **New** Endpoint for patients to rate assistant responses.
+  - **Request Schema (ChatFeedbackRequest)**:
+    - `message_id`: integer > 0, identifies the specific assistant message to rate.
+    - `rating`: literal "up" or "down", indicates helpfulness rating.
+    - `reason`: optional string up to 500 characters, only shown for "down" ratings.
+  - **Response Schema (ChatFeedbackResponse)**:
+    - `ok`: boolean indicating successful submission.
+    - `rating`: echoes the submitted rating.
+    - `message`: confirmation message for the patient.
+  - **Validation Rules**:
+    - Message must belong to the session-owned conversation.
+    - Message must be an assistant turn (not patient message).
+    - Re-rating updates existing feedback row instead of creating duplicates.
+    - Reason text is trimmed and limited to 500 characters.
+  - **Error Handling**:
+    - Returns 422 Unprocessable Entity if feedback doesn't apply to assistant message in this conversation.
+    - Uses session-based authentication via `X-Patient-Session` header.
+
+**Section sources**
+- [chat.py:277-322](file://backend/app/api/chat.py#L277-L322)
+- [schemas.py:241-257](file://backend/app/schemas.py#L241-L257)
+- [client.ts:212-300](file://frontend/src/api/client.ts#L212-L300)
 
 #### Scheduling Actions
 - `POST /api/scheduling/slots/select`:
@@ -416,6 +462,24 @@ LiveProposals --> Reconcile["Reconcile transcript and clickable actions"]
 - [useChat.ts:548-623](file://frontend/src/hooks/useChat.ts#L548-L623)
 - [client.ts:265-301](file://frontend/src/api/client.ts#L265-L301)
 
+#### Submitting Feedback
+- **New** Flow:
+  - Patient rates assistant response using thumbs up/down buttons.
+  - For "down" ratings, optional reason text can be provided.
+  - Frontend calls `submitFeedback` with message ID, rating, and optional reason.
+  - Backend validates that feedback applies to assistant message in current conversation.
+  - Success shows confirmation message; failure shows quiet warning.
+- **New** Errors:
+  - Invalid message ID or wrong conversation: 422.
+  - Non-assistant message: 422.
+  - Network failure: frontend shows warning but allows continued chatting.
+
+**Section sources**
+- [chat.py:277-322](file://backend/app/api/chat.py#L277-L322)
+- [client.ts:286-300](file://frontend/src/api/client.ts#L286-L300)
+- [useChat.ts:712-729](file://frontend/src/hooks/useChat.ts#L712-L729)
+- [MessageBubble.tsx:92-104](file://frontend/src/components/chat/MessageBubble.tsx#L92-L104)
+
 #### Holding and Confirming a Slot
 - Flow:
   - Select slot: creates a proposal card with idempotent key.
@@ -452,6 +516,7 @@ LiveProposals --> Reconcile["Reconcile transcript and clickable actions"]
 - Frontend patient client depends on:
   - `sessionStore` for tab-scoped token and conversation id.
   - `useChat` for bootstrapping, restoring, sending, and reconciling.
+  - **New** `MessageBubble` component for feedback UI interaction.
 - Frontend staff client depends on:
   - CSRF cookie reading and automatic header injection.
   - `credentials: "same-origin"` for HttpOnly cookie transport.
@@ -459,11 +524,13 @@ LiveProposals --> Reconcile["Reconcile transcript and clickable actions"]
   - `CurrentPatientSession` enforces patient token presence and validity.
   - `CurrentStaffSession` and `CurrentStaffUser` enforce staff cookie and CSRF.
   - Services encapsulate hashing, session issuance, and business logic.
+  - **New** `ConversationFeedback` model for storing patient ratings.
 
 ```mermaid
 graph LR
 FE_Client["client.ts"] --> FE_Store["sessionStore.ts"]
 FE_Client --> FE_Hook["useChat.ts"]
+FE_Message["MessageBubble.tsx"] --> FE_Hook
 FE_Staff["staff.ts"] --> FE_Auth["StaffAuthContext.tsx"]
 FE_Hook --> API_Chat["chat.py"]
 FE_Hook --> API_Sched["scheduling.py"]
@@ -473,6 +540,8 @@ API_Sched --> Deps
 API_Staff --> Deps
 Deps --> PSession["patient_sessions.py"]
 PSession --> Sec["security.py"]
+API_Chat --> Models["conversations.py"]
+Models --> FeedbackModel["ConversationFeedback"]
 ```
 
 **Diagram sources**
@@ -480,12 +549,14 @@ PSession --> Sec["security.py"]
 - [staff.ts:19-404](file://frontend/src/api/staff.ts#L19-L404)
 - [sessionStore.ts:70-137](file://frontend/src/lib/sessionStore.ts#L70-L137)
 - [useChat.ts:271-749](file://frontend/src/hooks/useChat.ts#L271-L749)
-- [chat.py:111-346](file://backend/app/api/chat.py#L111-L346)
+- [MessageBubble.tsx:1-233](file://frontend/src/components/chat/MessageBubble.tsx#L1-L233)
+- [chat.py:111-347](file://backend/app/api/chat.py#L111-L347)
 - [scheduling.py:216-553](file://backend/app/api/scheduling.py#L216-L553)
 - [staff.py:226-716](file://backend/app/api/staff.py#L226-L716)
 - [deps.py:1-98](file://backend/app/api/deps.py#L1-L98)
 - [patient_sessions.py:1-123](file://backend/app/services/patient_sessions.py#L1-L123)
 - [security.py:1-47](file://backend/app/services/security.py#L1-L47)
+- [conversations.py:129-157](file://backend/app/models/conversations.py#L129-L157)
 
 **Section sources**
 - [client.ts:104-307](file://frontend/src/api/client.ts#L104-L307)
@@ -496,6 +567,7 @@ PSession --> Sec["security.py"]
 - Blocking model execution is offloaded using a thread pool to keep the event loop responsive.
 - Database errors are handled globally with stable error codes and retry hints where appropriate.
 - Scheduling actions are deterministic and idempotent, reducing contention and duplication.
+- Feedback submissions are lightweight database operations with immediate commit.
 - Frontend uses optimistic UI and AbortSignals to cancel stale requests during navigation or rapid interactions.
 
 [No sources needed since this section provides general guidance]
@@ -506,6 +578,10 @@ PSession --> Sec["security.py"]
   - If 404 occurs after a demo reset, restart the session flow.
 - Invalid or expired patient session:
   - Clear stored pointers and start a fresh session.
+- **New** Feedback submission issues:
+  - Ensure message ID corresponds to an assistant message in the current conversation.
+  - Check that the feedback endpoint is accessible and session token is valid.
+  - Verify that the message hasn't been deleted or moved to another conversation.
 - Staff CSRF failures:
   - Reload the dashboard to obtain a fresh CSRF cookie.
   - Ensure mutating requests include `X-Staff-CSRF`.
@@ -522,4 +598,6 @@ PSession --> Sec["security.py"]
 - [staff.ts:229-267](file://frontend/src/api/staff.ts#L229-L267)
 
 ## Conclusion
-The API design emphasizes clear separation between patient and staff authentication, deterministic scheduling actions, and robust error handling. Patient sessions use an opaque header-based token, while staff operations rely on HttpOnly cookies and CSRF protection. Real-time-like UX is achieved through polling and reconciliation rather than WebSockets. Clients should handle session invalidation, CSRF mismatches, and transient database errors gracefully, and should prefer idempotent keys for scheduling mutations.
+The API design emphasizes clear separation between patient and staff authentication, deterministic scheduling actions, and robust error handling. Patient sessions use an opaque header-based token, while staff operations rely on HttpOnly cookies and CSRF protection. Real-time-like UX is achieved through polling and reconciliation rather than WebSockets. 
+
+**Updated** The new feedback API endpoint enables patients to rate assistant responses, providing valuable quality signals for staff review. The feedback system integrates seamlessly with the existing chat workflow, allowing patients to provide thumbs-up/thumbs-down ratings with optional comments. Clients should handle session invalidation, CSRF mismatches, and transient database errors gracefully, and should prefer idempotent keys for scheduling mutations. The feedback feature demonstrates the system's extensibility while maintaining consistent authentication and error handling patterns.

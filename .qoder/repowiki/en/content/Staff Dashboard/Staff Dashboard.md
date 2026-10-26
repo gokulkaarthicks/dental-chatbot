@@ -14,7 +14,16 @@
 - [AlertsSection.tsx](file://frontend/src/pages/staff/sections/AlertsSection.tsx)
 - [RequestsSection.tsx](file://frontend/src/pages/staff/sections/RequestsSection.tsx)
 - [FeedbackSection.tsx](file://frontend/src/pages/staff/sections/FeedbackSection.tsx)
+- [staff.ts](file://frontend/src/api/staff.ts)
 </cite>
+
+## Update Summary
+**Changes Made**   
+- Updated Feedback Section documentation to reflect the new aggregated feedback statistics and detailed feedback entries functionality
+- Enhanced the Conversation Feedback Review section with detailed UI components and data visualization
+- Added specific information about the three-window time filtering system (7, 30, 90 days)
+- Documented the positive percentage calculation and feedback metrics display
+- Updated API documentation to include the new feedback endpoint response structure
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -92,7 +101,7 @@ MP --> STAFF
 - [main.py:202-256](file://backend/app/main.py#L202-L256)
 
 ## Core Components
-The staff dashboard has five operational pillars:
+The staff dashboard has six operational pillars:
 
 | Area | Purpose | Key backend route(s) | Key frontend component(s) |
 |---|---|---|---|
@@ -101,6 +110,7 @@ The staff dashboard has five operational pillars:
 | Alerts | Emergency and escalation board with acknowledge/resolve | `/alerts`, `/alerts/{id}`, status/severity routes | `AlertsSection.tsx` |
 | Requests | Pending handoff queue with status moves and approvals | `/requests`, `/requests/{id}`, status/approve routes | `RequestsSection.tsx` |
 | Feedback | Patient ratings of assistant replies with counts and excerpts | `/feedback` | `FeedbackSection.tsx` |
+| Overview | Dashboard summary with key metrics | `/summary` | `OverviewSection.tsx` |
 
 All write endpoints require an active staff session and a matching CSRF header. Read endpoints require only an active session. The frontend uses polling, focus events, and change coordination to keep displayed data fresh without WebSockets.
 
@@ -207,7 +217,7 @@ Real-time updates use three mechanisms:
 2. **Focus and visibility:** when the tab regains focus or becomes visible again, the active view reloads once.
 3. **Polling:** while visible, the active view polls every 20 seconds. Hidden tabs do no work.
 
-The header shows a “Synced …” timestamp so users understand why numbers may change without a manual refresh.
+The header shows a "Synced …" timestamp so users understand why numbers may change without a manual refresh.
 
 ```mermaid
 flowchart TD
@@ -335,13 +345,64 @@ Resolved --> InProgress : "Reopen"
 - [staff.py:590-654](file://backend/app/api/staff.py#L590-L654)
 
 ### Conversation Feedback Review
-The feedback section shows patient ratings of assistant replies. It displays positive share, thumbs-up and thumbs-down counts, and recent feedback entries with conversation title, rating, optional reason, reply excerpt, and timestamp.
+The feedback section provides a comprehensive view of patient ratings for assistant replies, featuring aggregated statistics and detailed feedback entries. This component helps staff identify transcripts worth reviewing rather than relying on metrics alone.
 
-This view helps staff identify transcripts worth reviewing rather than relying on metrics alone.
+**Updated** The FeedbackSection component now includes sophisticated data visualization with three key areas:
+
+#### Aggregated Statistics Display
+The component displays three primary metrics in a stat panel:
+
+| Metric | Description | Calculation |
+|---|---|---|
+| Positive | Percentage of helpful ratings | `(thumbs_up / total_ratings) × 100` |
+| Helpful | Count of thumbs-up ratings | Direct count from database |
+| Needs a look | Count of thumbs-down ratings | Direct count from database |
+
+#### Time Window Filtering
+Staff can filter feedback using three predefined time windows:
+
+- **Last 7 days**: Short-term performance monitoring
+- **Last 30 days**: Monthly performance analysis  
+- **Last 90 days**: Quarterly trend analysis
+
+#### Detailed Feedback Entries
+Each feedback entry displays:
+
+- Conversation title (or "Conversation" if unavailable)
+- Rating badge ("Helpful" or "Not helpful")
+- Reply excerpt (up to 320 characters)
+- Optional patient reason for negative feedback
+- Relative timestamp with full timestamp tooltip
+- Thumbs up/down icon indicator
+
+```mermaid
+flowchart TD
+A["Patient rates assistant reply"] --> B["Store rating in database"]
+B --> C["FeedbackSection queries /api/staff/feedback"]
+C --> D["Display aggregated statistics"]
+C --> E["Show recent feedback entries"]
+D --> F["Calculate positive percentage"]
+E --> G["Render individual feedback cards"]
+G --> H["Highlight negative feedback"]
+```
+
+**Diagram sources**
+- [FeedbackSection.tsx:28-109](file://frontend/src/pages/staff/sections/FeedbackSection.tsx#L28-L109)
+- [staff.py:325-372](file://backend/app/api/staff.py#L325-L372)
+
+#### Backend Integration
+The feedback endpoint returns structured data including:
+
+- **Counts object**: Contains `up`, `down`, and `total` rating counts
+- **Window configuration**: Shows the selected time window in days
+- **Feedback array**: Latest feedback entries with conversation context
+
+The frontend calculates the positive percentage client-side and handles empty states gracefully when no feedback exists.
 
 **Section sources**
 - [FeedbackSection.tsx:1-140](file://frontend/src/pages/staff/sections/FeedbackSection.tsx#L1-L140)
 - [staff.py:325-372](file://backend/app/api/staff.py#L325-L372)
+- [staff.ts:192-205](file://frontend/src/api/staff.ts#L192-L205)
 - [README.md:153-159](file://README.md#L153-L159)
 
 ### Handoff System
@@ -503,7 +564,7 @@ For production scale, the README proposes moving transactional data to PostgreSQ
 **Steps:**
 1. Bring the tab to the foreground.
 2. Click Refresh.
-3. Check the “Synced …” indicator.
+3. Check the "Synced …" indicator.
 4. Reload the page if the session is expired.
 
 **Section sources**
@@ -532,24 +593,49 @@ For production scale, the README proposes moving transactional data to PostgreSQ
 - [AlertsSection.tsx:39-189](file://frontend/src/pages/staff/sections/AlertsSection.tsx#L39-L189)
 - [AlertsSection.tsx:191-348](file://frontend/src/pages/staff/sections/AlertsSection.tsx#L191-L348)
 
-### Feedback entry is missing
+### Feedback section shows no data
 **Symptoms:**
 - Feedback panel shows no entries.
 - Positive share is unavailable.
+- Statistics display "--" instead of percentages.
 
 **Likely causes:**
 - No rated replies in the selected window.
-- Window is too narrow.
+- Window is too narrow (e.g., last 7 days with no activity).
 - Rating was submitted outside the queried period.
+- Network error prevented data loading.
 
 **Steps:**
 1. Expand the window to 30 or 90 days.
-2. Refresh the panel.
+2. Click the Refresh button.
 3. Confirm the patient rated the final assistant turn.
+4. Check network connectivity and backend service status.
 
 **Section sources**
 - [FeedbackSection.tsx:22-109](file://frontend/src/pages/staff/sections/FeedbackSection.tsx#L22-L109)
 - [staff.py:325-372](file://backend/app/api/staff.py#L325-L372)
 
+### Feedback statistics appear incorrect
+**Symptoms:**
+- Positive percentage calculation seems wrong.
+- Counts don't match expected values.
+
+**Likely causes:**
+- Client-side calculation rounding differences.
+- Multiple ratings for the same message (only latest counts).
+- Time zone differences affecting window calculations.
+
+**Steps:**
+1. Verify the selected time window matches expectations.
+2. Check backend database directly for raw counts.
+3. Confirm ratings were submitted within the selected period.
+4. Refresh the page to ensure latest data is loaded.
+
+**Section sources**
+- [FeedbackSection.tsx:33-35](file://frontend/src/pages/staff/sections/FeedbackSection.tsx#L33-L35)
+- [staff.py:338-359](file://backend/app/api/staff.py#L338-L359)
+
 ## Conclusion
-The staff dashboard is a focused operations tool built around deterministic backend boundaries. Authentication relies on server-side sessions, HttpOnly cookies, and CSRF protection. The interface exposes real-time-ish views of appointments, patients, handoff requests, emergency alerts, and conversation feedback, with clear staff actions for scheduling and case management. Real-time behavior is achieved through polling, focus/visibility handling, and change coordination rather than WebSockets. Security focuses on separating staff and patient access, protecting session cookies, validating CSRF headers, limiting brute-force attempts, and returning safe, non-leaking errors. Operational monitoring is currently centered on structured logs, audit records, and dashboard refresh indicators, with production scaling guidance outlined in the repository documentation.
+The staff dashboard is a focused operations tool built around deterministic backend boundaries. Authentication relies on server-side sessions, HttpOnly cookies, and CSRF protection. The interface exposes real-time-ish views of appointments, patients, handoff requests, emergency alerts, and conversation feedback, with clear staff actions for scheduling and case management. 
+
+**Updated** The enhanced feedback system now provides comprehensive analytics with aggregated statistics, time-based filtering, and detailed feedback entries, enabling staff to effectively monitor assistant performance and identify areas for improvement. Real-time behavior is achieved through polling, focus/visibility handling, and change coordination rather than WebSockets. Security focuses on separating staff and patient access, protecting session cookies, validating CSRF headers, limiting brute-force attempts, and returning safe, non-leaking errors. Operational monitoring is currently centered on structured logs, audit records, and dashboard refresh indicators, with production scaling guidance outlined in the repository documentation.

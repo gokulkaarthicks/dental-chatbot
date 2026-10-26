@@ -60,6 +60,7 @@ def _draft(
 ) -> DraftItem:
     options = scheduling.options_for_slots(
         session,
+        world.clinic,
         appointment_type=world.cleaning,
         slot_ids=[slot_stable_id],
         patient_id=world.patient.id,

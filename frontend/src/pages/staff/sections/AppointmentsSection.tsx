@@ -18,10 +18,9 @@ import {
   type SlotOption,
 } from "../../../api/staff";
 import { Button } from "../../../components/Button";
+import { describeAction, fullTimestamp } from "../../../lib/staffFormat";
 import {
   appointmentBadge,
-  describeAction,
-  fullTimestamp,
   EmptyState,
   ErrorState,
   SkeletonRows,

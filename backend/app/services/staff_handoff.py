@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.db import require_clinic_id
 from app.models import (
     AlertKind,
     AlertStatus,
@@ -161,6 +162,7 @@ def raise_alert(
         )
 
     alert = StaffAlert(
+        clinic_id=require_clinic_id(session),
         conversation_id=conversation_id,
         patient_id=patient_id,
         kind=kind_value,
@@ -240,6 +242,7 @@ def raise_request(
         )
 
     request = PendingRequest(
+        clinic_id=require_clinic_id(session),
         conversation_id=conversation_id,
         patient_id=patient_id,
         request_type=type_value,

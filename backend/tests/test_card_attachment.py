@@ -15,10 +15,11 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from app.agent import runner
-from app.db import create_db_engine
+from app.agent import graph
+from app.db import bind_tenant, create_db_engine
 from app.models import Base, PatientSession
 from app.services import conversations, patient_sessions
+from tests.support import seed_clinic
 
 CARD = [{"type": "slot", "slot_id": "slot_1_202610270800"}]
 
@@ -28,6 +29,8 @@ def thread(tmp_path):
     engine = create_db_engine(f"sqlite+pysqlite:///{tmp_path / 'clinic.db'}")
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+    clinic = seed_clinic(session, slug="cards")
+    bind_tenant(session, clinic.clinic_id)
     issued = patient_sessions.create_patient_session(session)
     patient_session = session.get(PatientSession, issued.session_id)
     assert patient_session is not None
@@ -61,7 +64,7 @@ def test_cards_attach_to_the_reply_this_turn_produced(thread) -> None:
     )
     session.commit()
 
-    runner._attach_cards(session, conversation, CARD, turn_floor=floor)
+    graph._attach_cards(session, conversation, CARD, turn_floor=floor)
     session.commit()
 
     rows = _texts(session, conversation)
@@ -77,7 +80,7 @@ def test_cards_never_reach_back_past_the_patient_message(thread) -> None:
     conversations.append_patient_message(session, conversation, "uhc")
     session.commit()
 
-    runner._attach_cards(session, conversation, CARD, turn_floor=floor)
+    graph._attach_cards(session, conversation, CARD, turn_floor=floor)
     session.commit()
 
     rows = _texts(session, conversation)

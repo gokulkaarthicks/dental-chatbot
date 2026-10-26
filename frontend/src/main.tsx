@@ -1,3 +1,12 @@
+/**
+ * Entry point: pick a page from the URL, then mount it.
+ *
+ * Three surfaces share one bundle -- the patient chat, the Phase 1 operations
+ * overview, and the staff dashboard -- and each is a whole page at its own
+ * path, so the switch below is the entire router. The document title is kept on
+ * the clinic's configured name rather than a literal.
+ */
+
 import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 

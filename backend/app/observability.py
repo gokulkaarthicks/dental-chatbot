@@ -212,10 +212,6 @@ def tool_executed(logger: logging.Logger, **fields: Any) -> None:
     log_event(logger, "tool.executed", **fields)
 
 
-def deepseek_status(logger: logging.Logger, **fields: Any) -> None:
-    log_event(logger, "deepseek.request", **fields)
-
-
 def staff_alert_created(logger: logging.Logger, **fields: Any) -> None:
     log_event(logger, "staff_alert.created", level=logging.WARNING, **fields)
 
@@ -228,7 +224,6 @@ __all__ = [
     "configure_logging",
     "conflict_rejected",
     "current_request_id",
-    "deepseek_status",
     "idempotency_hit",
     "log_event",
     "new_request_id",

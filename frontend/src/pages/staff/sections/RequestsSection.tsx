@@ -13,11 +13,13 @@ import { Check, Search, X } from "lucide-react";
 import { staffApi, type PendingRequest, type RequestStatus, type RequestType } from "../../../api/staff";
 import { Button } from "../../../components/Button";
 import {
+  REQUEST_TYPE_LABELS,
   describeAction,
   fullTimestamp,
   relativeTime,
+} from "../../../lib/staffFormat";
+import {
   requestStatusBadge,
-  REQUEST_TYPE_LABELS,
   EmptyState,
   ErrorState,
   SkeletonRows,
