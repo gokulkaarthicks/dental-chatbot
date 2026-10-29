@@ -1,1 +1,0 @@
-SQLAlchemy ORM with raw `BEGIN IMMEDIATE` SQLite transactions for writer serialization; datetime values stored as naive clinic-local timestamps (not UTC) per comments in `staff_handoff_board.summary_counts`.

@@ -1,1 +1,0 @@
-React hooks over native `fetch` against same-origin `/api/*` endpoints proxied by Vite (dev) or nginx (containers); patient auth uses an opaque session token in `X-Patient-Session`, staff auth uses HttpOnly cookies plus CSRF via `X-Staff-CSRF`; voice input uses the Web Speech API (`SpeechRecognition` / `webkitSpeechRecognition`).

@@ -1,1 +1,0 @@
-Python FastAPI + SQLAlchemy with SQLite; Pytest for integration tests; DeepSeek API for LLM orchestration; Alembic-style migration runner defined in `app/migrations.py`.

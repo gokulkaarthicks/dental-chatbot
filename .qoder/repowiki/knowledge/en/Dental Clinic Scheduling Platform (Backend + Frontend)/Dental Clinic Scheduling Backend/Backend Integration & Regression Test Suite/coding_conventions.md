@@ -1,4 +1,0 @@
-- Each test module targets a single scenario and documents its coverage surface at the top of the file via a docstring block listing what is covered.
-- Shared world state is built by seeding Provider, AppointmentType, Patient, Conversation, and AvailabilitySlot rows through a session created from a temporary SQLite engine, never against the project's live database path.
-- The global `app.db` module is temporarily patched (`_engine`, `_session_factory`, `get_engine`, `database_path`) inside fixtures so the rest of the codebase transparently reads/writes the throwaway database, and the original values are restored in a `finally` block.
-- Fixed future dates (e.g. `BOOKING_DAY = date(2030, 5, 6)`, `ORIGINAL_DAY`, `REPLACEMENT_DAY`) are used instead of `date.today()` so tests do not depend on the weekday they run.

@@ -1,1 +1,0 @@
-React + TypeScript components styled with plain CSS custom properties; icons from `lucide-react`; speech dictation via the Web Speech API through the shared `useDictation` hook.

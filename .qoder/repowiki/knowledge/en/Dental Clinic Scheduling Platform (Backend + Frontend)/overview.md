@@ -1,1 +1,0 @@
-Top-level orchestrator that composes the FastAPI scheduling backend and React front-desk dashboard into a single Docker Compose stack with shared SQLite persistence and pre-push quality gates.

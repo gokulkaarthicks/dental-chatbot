@@ -1,1 +1,0 @@
-React + TypeScript on Vite, packaged as a Docker image served by nginx; communicates with a SQLite-backed backend via REST.

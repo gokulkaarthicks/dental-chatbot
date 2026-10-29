@@ -1,5 +1,0 @@
-The root is a thin orchestration layer around two sibling services (`backend/`, `frontend/`) with no shared source code between them. Composition happens in three layers:
-- `docker-compose.yml` defines the production topology: `backend` (FastAPI on :8000) exposes `/api/health`; `frontend` (nginx serving Vite output on :8080) depends on the backend being healthy; both share the named volume `clinic-data` for SQLite persistence.
-- `docker-compose.dev.yml` is an overlay that replaces baked commands with bind-mounted source trees, uvicorn `--reload`, and the Vite dev server on :5173 proxying `/api` to `http://backend:8000` via `VITE_API_PROXY_TARGET`.
-- `Makefile` is the single developer entry point: `make up` builds both images, `make dev` stacks the compose files for hot reload, `make seed` / `make reset-demo` drive the backend's CLI inside containers, and `make check` / `hooks` run the shared `scripts/check-before-push.sh` which enforces ruff + pytest locally before git push.
-Environment variables from `.env` are injected only into the backend container so DeepSeek keys never reach the frontend build or bundle.

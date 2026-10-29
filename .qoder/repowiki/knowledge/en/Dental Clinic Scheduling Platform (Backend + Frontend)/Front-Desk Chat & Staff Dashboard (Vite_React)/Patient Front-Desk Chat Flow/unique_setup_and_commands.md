@@ -1,1 +1,0 @@
-The Web Speech API requires HTTPS or localhost for microphone access; dictation errors are surfaced inline rather than failing the component.

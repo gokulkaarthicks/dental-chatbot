@@ -1,1 +1,0 @@
-Domain service layer implementing appointment scheduling, availability search, staff handoff triage, patient/provider orchestration, and concurrent SQLite-safe mutations.

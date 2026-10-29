@@ -1,1 +1,0 @@
-React page and components that let a patient start, restore, send, and rate messages in a single-threaded front-desk chat backed by the chat API.

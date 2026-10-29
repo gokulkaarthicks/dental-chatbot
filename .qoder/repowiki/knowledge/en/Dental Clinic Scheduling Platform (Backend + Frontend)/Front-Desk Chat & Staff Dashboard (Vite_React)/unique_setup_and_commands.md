@@ -1,1 +1,0 @@
-Build and serve via Vite (`npm run dev` / `npm run build`); production image is built with the provided `Dockerfile` and served by the bundled `nginx.conf`.

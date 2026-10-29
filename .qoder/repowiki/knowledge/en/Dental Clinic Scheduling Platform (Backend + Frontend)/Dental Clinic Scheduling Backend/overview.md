@@ -1,1 +1,0 @@
-FastAPI backend that layers HTTP routers over domain services, which operate on SQLAlchemy models and are driven by a DeepSeek-powered conversational agent for dental appointment scheduling.

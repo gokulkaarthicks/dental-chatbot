@@ -37,3 +37,6 @@ dist/
 
 # Local diagnostics / generated dumps
 latest_logs/
+
+# Generated tool wikis (regenerated, never authored)
+.qoder/

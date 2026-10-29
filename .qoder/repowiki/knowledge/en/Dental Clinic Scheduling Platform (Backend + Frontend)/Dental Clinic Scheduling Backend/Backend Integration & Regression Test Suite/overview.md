@@ -1,1 +1,0 @@
-Pytest suite exercising the backend's scheduling, rescheduling, and conversation tooling against a throwaway SQLite database with seeded providers, patients, and availability slots.

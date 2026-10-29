@@ -1,3 +1,0 @@
-- Domain state lives in SQLAlchemy declarative classes under `app/models/` and is accessed exclusively through service functions in `app/services/`, never directly from route handlers.
-- HTTP endpoints in `app/api/` are thin routers that resolve dependencies (DB session, auth) and delegate all business logic to `app/services/`.
-- SQLite database access goes through a single engine/session created in `app/db.py`, ensuring all layers share one connection pool per request.
